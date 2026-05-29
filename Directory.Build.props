@@ -1,0 +1,26 @@
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+
+    <!-- Roslyn's IDE0005 (unused using) emits at build time only when XML docs
+         are also generated (https://github.com/dotnet/roslyn/issues/41640).
+         Generate docs everywhere; suppress CS1591 so undocumented members
+         (e.g. test methods, init-only record properties) don't fail the build. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+
+    <!-- Deterministic build so the same source produces the same output. -->
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition=" '$(CI)' == 'true' ">true</ContinuousIntegrationBuild>
+
+    <!-- Authoring -->
+    <Authors>boxsie</Authors>
+    <Copyright>Copyright (c) boxsie</Copyright>
+  </PropertyGroup>
+
+</Project>

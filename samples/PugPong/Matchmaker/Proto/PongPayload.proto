@@ -1,0 +1,11 @@
+syntax = "proto3";
+package pugpong;
+option csharp_namespace = "PugPong.Proto";
+
+// What a player tells the matchmaker about themselves at queue time. Lives
+// alongside the matchmaker because the Godot client serialises this exact
+// shape when it calls PUG.Ensemble's JoinMatchmakingAsync.
+message PongPayload {
+  string player_name      = 1;
+  string preferred_color  = 2;  // e.g. "#ff8800"; matchmaker doesn't care, the client picks
+}

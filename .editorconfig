@@ -1,0 +1,36 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{json,yml,yaml}]
+indent_size = 2
+
+[*.cs]
+# Prefer file-scoped namespaces
+csharp_style_namespace_declarations = file_scoped:suggestion
+
+# var preferences — explicit only when the type is not apparent
+csharp_style_var_for_built_in_types = false:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+csharp_style_var_elsewhere = false:suggestion
+
+# Brace style
+csharp_new_line_before_open_brace = all
+csharp_prefer_braces = true:warning
+
+# Expression-bodied members
+csharp_style_expression_bodied_methods = false:silent
+csharp_style_expression_bodied_properties = true:suggestion
+
+# Modifier order
+csharp_preferred_modifier_order = public, private, protected, internal, static, readonly, sealed, abstract, async, override, virtual, extern, new, unsafe, volatile:suggestion
+
+# Treat unused locals/imports as errors so they can't smuggle in
+dotnet_diagnostic.CS0219.severity = error  # unused local
+dotnet_diagnostic.IDE0005.severity = warning  # unused using (warning so generated/template files don't break)

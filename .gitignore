@@ -1,0 +1,30 @@
+## .NET build output
+bin/
+obj/
+out/
+publish/
+
+## Visual Studio / Rider / VS Code
+.vs/
+.vscode/
+.idea/
+*.user
+*.userprefs
+*.suo
+
+## Test results / coverage
+TestResults/
+*.coverage
+*.coveragexml
+coverage.*.xml
+
+## NuGet local
+*.nupkg
+*.snupkg
+
+## OS cruft
+.DS_Store
+Thumbs.db
+
+## Host-specific Claude Code MCP config (paths are absolute to this machine)
+.mcp.json

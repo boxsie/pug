@@ -1,0 +1,23 @@
+# PugPong sample stack: one ensembled daemon + the PugPong matchmaker process.
+# Bring up with `docker-compose up -d` from this directory.
+#
+# The `ensembled` service builds the Ensemble daemon image from a local
+# Ensemble checkout expected alongside this repo (context: ../../../ensemble).
+# Clone it from https://github.com/boxsie/ensemble if you don't have it.
+# The matchmaker itself pulls Ensemble.Client from NuGet, so it builds
+# self-contained (see Matchmaker/Dockerfile).
+
+services:
+  ensembled:
+    image: ensemble:dev
+    build:
+      context: ../../../ensemble
+      dockerfile: deployment/Dockerfile
+    ports:
+      - "9090:9090"
+    volumes:
+      - ensembled-data:/data
+    restart: unless-stopped
+
+volumes:
+  ensembled-data:

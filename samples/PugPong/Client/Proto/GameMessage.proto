@@ -1,0 +1,56 @@
+syntax = "proto3";
+package pugpong;
+option csharp_namespace = "PugPong.Proto";
+
+// In-match envelope. Travels over the post-match P2P surface
+// (PUG.Ensemble's QueueHandle.SendToPeerAsync / PeerMessages) between the
+// two matched clients. The .NET matchmaker is GONE after the introduction —
+// game state lives entirely in this stream.
+//
+// Authority is alphabetical-host: the player whose Ensemble E-address sorts
+// lexicographically lower owns the simulation. That player sends
+// MatchStatePacket; the other player sends InputPacket. MatchEnd is sent by
+// either side once a score threshold is reached.
+message GameMessage {
+  oneof msg {
+    MatchStatePacket state = 1;  // host -> guest, ~30 Hz
+    InputPacket      input = 2;  // guest -> host, on paddle move
+    MatchEnd         end   = 3;  // either side, once first-to-N reached
+  }
+}
+
+// Full simulation snapshot. Sent by the host at ~30 Hz; the guest
+// interpolates between consecutive ticks for smooth rendering. Coordinates
+// are in viewport-relative floats (0..1) so window resizing on either side
+// doesn't desync.
+//
+// p0 = host's paddle (left). p1 = guest's paddle (right).
+message MatchStatePacket {
+  float  ball_x  = 1;
+  float  ball_y  = 2;
+  float  ball_vx = 3;   // velocity, units per second (NOT a per-tick delta)
+  float  ball_vy = 4;
+  float  p0_y    = 5;
+  float  p1_y    = 6;
+  int32  score0  = 7;
+  int32  score1  = 8;
+  uint32 tick    = 9;
+}
+
+// Guest's paddle position. Sent whenever the guest's local paddle moves; the
+// host applies it on the next simulation tick. `tick` carries the host's
+// most-recently-observed tick number so the host can drop stale input.
+message InputPacket {
+  float  paddle_y = 1;
+  uint32 tick     = 2;
+}
+
+// Either side may send this once a first-to-N score is reached. The receiver
+// transitions to the result screen and (after a beat) back to Splash.
+//
+// `winner` is 0 (host wins) or 1 (guest wins).
+message MatchEnd {
+  int32 winner = 1;
+  int32 score0 = 2;
+  int32 score1 = 3;
+}

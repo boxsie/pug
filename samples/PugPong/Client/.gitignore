@@ -1,0 +1,12 @@
+# Godot 4+ cache + generated artefacts
+.godot/
+.mono/
+mono_crash.*.json
+
+# .NET build output (also covered by repo-root .gitignore)
+bin/
+obj/
+
+# Godot per-user editor state
+*.suo
+*.user

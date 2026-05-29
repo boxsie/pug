@@ -1,0 +1,62 @@
+using Ensemble.Client;
+using Google.Protobuf;
+using Microsoft.Extensions.Logging;
+using PUG.Core;
+using PUG.Ensemble;
+using PugPong.Matchmaker;
+using PugPong.Proto;
+
+var ensembleAddr = Environment.GetEnvironmentVariable("ENSEMBLE_GRPC_ADDR") ?? "http://localhost:9090";
+var serviceName = Environment.GetEnvironmentVariable("PUGPONG_SERVICE_NAME") ?? "pug-pong-matchmaker";
+
+using var loggerFactory = LoggerFactory.Create(b => b.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss "; }));
+var log = loggerFactory.CreateLogger("pugpong");
+
+await using var ensemble = new EnsembleClient(ensembleAddr, loggerFactory.CreateLogger<EnsembleClient>());
+
+var queue = new InMemoryQueue<Ticket<PongPayload>>();
+var matcher = new FifoMatcher<Ticket<PongPayload>>(queue, new[] { 1, 1 });
+var options = new MatchmakerOptions<PongPayload>(
+    ServiceName: serviceName,
+    TeamSizes: new[] { 1, 1 },
+    MaxPayloadBytes: 4096,
+    RateLimitPerMinute: 60,
+    RateLimitBurst: 10,
+    SerializePayload: p => p.ToByteArray(),
+    DeserializePayload: PongPayload.Parser.ParseFrom);
+
+await using var host = new MatchmakerServiceHost<PongPayload>(
+    ensemble, matcher, queue, options, loggerFactory.CreateLogger<MatchmakerServiceHost<PongPayload>>());
+await host.StartAsync();
+
+log.LogInformation("pug-pong-matchmaker up: addr={Addr} onion={Onion}", host.ServiceAddress, host.Onion);
+
+// Demo-orchestration handoff: if PUGPONG_ADDR_FILE is set, write the matchmaker's
+// E-address there so run/run-demo.sh can pick it up without scraping logs. The
+// script polls for this file to exist + be non-empty before launching clients.
+if (Environment.GetEnvironmentVariable("PUGPONG_ADDR_FILE") is { Length: > 0 } addrFile)
+{
+    try { File.WriteAllText(addrFile, host.ServiceAddress); }
+    catch (Exception ex) { log.LogWarning("could not write PUGPONG_ADDR_FILE={Path}: {Msg}", addrFile, ex.Message); }
+}
+
+using var shutdown = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) => { e.Cancel = true; shutdown.Cancel(); };
+AppDomain.CurrentDomain.ProcessExit += (_, _) => shutdown.Cancel();
+
+// Periodic queue-stats line for demo observability.
+var stats = Task.Run(async () =>
+{
+    while (!shutdown.IsCancellationRequested)
+    {
+        try { await Task.Delay(TimeSpan.FromSeconds(10), shutdown.Token); }
+        catch (OperationCanceledException) { break; }
+        var n = await queue.CountAsync(shutdown.Token);
+        log.LogInformation("queue depth: {Count}", n);
+    }
+});
+
+try { await Task.Delay(Timeout.Infinite, shutdown.Token); }
+catch (OperationCanceledException) { }
+log.LogInformation("shutting down");
+await stats;

@@ -1,0 +1,40 @@
+<Project Sdk="Godot.NET.Sdk/4.3.0">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <RootNamespace>PugPong.Client</RootNamespace>
+    <AssemblyName>PugPong.Client</AssemblyName>
+    <Nullable>enable</Nullable>
+
+    <!-- Godot's generated GodotPlugins / source generators trip the root
+         Directory.Build.props's TreatWarningsAsErrors. Loosen for the
+         Godot sample only; production PUG.* projects stay strict. -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;CA1416;CS8618</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\PUG.Ensemble\PUG.Ensemble.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.27.3" />
+    <PackageReference Include="Grpc.Tools" Version="2.65.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- PongPayload schema is shared with the matchmaker sample — linked from
+         ../Matchmaker/Proto so both sides see the same wire format. GameMessage
+         is the in-match (host ↔ guest) envelope used over QueueHandle's
+         SendToPeerAsync / PeerMessages surface. -->
+    <Protobuf Include="..\Matchmaker\Proto\PongPayload.proto" Link="Proto\PongPayload.proto" GrpcServices="None" />
+    <Protobuf Include="Proto\GameMessage.proto" GrpcServices="None" />
+  </ItemGroup>
+
+</Project>

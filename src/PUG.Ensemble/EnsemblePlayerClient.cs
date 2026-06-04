@@ -319,21 +319,14 @@ public sealed class EnsemblePlayerClient : IAsyncDisposable
 
         try
         {
-            // Best-effort peer pre-dial to the matchmaker — see
-            // JoinMatchmakingAsync's predecessor for the full rationale.
-            try
-            {
-                var dial = await _ensemble.ConnectAsync(matchmakerAddr, ct).ConfigureAwait(false);
-                if (!dial.Accepted)
-                    _logger.LogDebug(
-                        "Pre-dial to matchmaker service address {Addr} not accepted ({Msg}); proceeding with SendBytesAsync via service registry",
-                        matchmakerAddr, dial.Message);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Pre-dial to matchmaker {Addr} threw; proceeding", matchmakerAddr);
-            }
-
+            // No client-side pre-dial. The matchmaker uses strict envelope
+            // attribution (Ensemble VerifyAndAttribute), so our service-signed
+            // JOIN is only accepted once the matchmaker has bound THIS service's
+            // key via a service-identity handshake. A node-identity pre-dial
+            // (the old EnsembleClient.ConnectAsync) bound the wrong key and the
+            // JOIN was silently dropped. The daemon now establishes the
+            // service-identity connection on demand when this SendBytes finds no
+            // route, so the first send "just works" with the correct binding.
             await service.SendBytesAsync(matchmakerAddr, req.ToByteArray(), ct).ConfigureAwait(false);
 
             var first = await AwaitFirstAsync(firstTcs.Task, startupErrorTcs.Task, ct).ConfigureAwait(false);

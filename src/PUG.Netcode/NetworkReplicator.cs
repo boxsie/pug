@@ -11,8 +11,9 @@ namespace PUG.Netcode;
 ///
 /// <para><b>One class, role from <see cref="NetSession"/>:</b></para>
 /// <list type="bullet">
-/// <item><b>Authority</b> — <see cref="Register"/> an <see cref="INetEntityState"/>
-///   (gets a stable id), <see cref="Despawn"/> it, and once per snapshot tick call
+/// <item><b>Authority</b> — <see cref="Register(INetEntityState, PeerId)"/> an
+///   <see cref="INetEntityState"/> (gets a stable id), <see cref="Despawn"/> it, and
+///   once per snapshot tick call
 ///   <see cref="CaptureAndBroadcastAsync"/> to serialize every registered entity
 ///   and broadcast it to all links.</item>
 /// <item><b>Client</b> — call <see cref="Apply"/> each frame to drain the channel,
@@ -98,6 +99,23 @@ public sealed class NetworkReplicator
     public IReadOnlyDictionary<ushort, ReplicatedEntity> Entities => _entities;
 
     /// <summary>
+    /// (Client) The reconstructed entities controlled by <paramref name="owner"/> —
+    /// pass <see cref="NetSession.SelfId"/> to find "mine". A client predicts its own
+    /// entities (Tier C) and interpolates the rest; the world/server's entities carry
+    /// <see cref="PeerId.Authority"/> and are owned by nobody to predict.
+    /// </summary>
+    public IEnumerable<ReplicatedEntity> EntitiesOwnedBy(PeerId owner)
+    {
+        foreach (var entity in _entities.Values)
+        {
+            if (entity.Owner == owner)
+            {
+                yield return entity;
+            }
+        }
+    }
+
+    /// <summary>
     /// Build the <b>authority</b> replicator over an authoritative
     /// <paramref name="session"/>. It serializes every registered entity into the
     /// snapshot stream on <paramref name="snapshotChannel"/> (declare it
@@ -150,19 +168,31 @@ public sealed class NetworkReplicator
     }
 
     /// <summary>
-    /// (Authority) Register <paramref name="entity"/> for replication and return
-    /// its new stable id. The entity stays in every snapshot until
-    /// <see cref="Despawn"/>. <c>owner</c> is recorded as
-    /// <see cref="PeerId.Authority"/> — B1 has no client-owned entities yet; B3
-    /// adds an owner argument here and writes a real peer-id.
+    /// (Authority) Register a world/server-owned <paramref name="entity"/> for
+    /// replication and return its new stable id — shorthand for
+    /// <see cref="Register(INetEntityState, PeerId)"/> with
+    /// <see cref="PeerId.Authority"/>. Use this for the ball, AI, scenery: things no
+    /// client controls.
     /// </summary>
-    public ushort Register(INetEntityState entity)
+    public ushort Register(INetEntityState entity) => Register(entity, PeerId.Authority);
+
+    /// <summary>
+    /// (Authority) Register <paramref name="entity"/> for replication under a
+    /// controlling <paramref name="owner"/> and return its new stable id. The owner
+    /// is written into every snapshot's per-entity <c>owner</c> byte; a client reads
+    /// it back and compares with its own <see cref="NetSession.SelfId"/> to find the
+    /// entity it controls (<see cref="EntitiesOwnedBy"/>). Pass
+    /// <see cref="PeerId.Authority"/> for world-owned entities, a client's
+    /// <see cref="PeerId"/> for one it drives. The entity stays in every snapshot
+    /// until <see cref="Despawn"/>.
+    /// </summary>
+    public ushort Register(INetEntityState entity, PeerId owner)
     {
         ArgumentNullException.ThrowIfNull(entity);
         EnsureAuthority();
 
         var id = _nextEntityId++;
-        _registry[id] = new Registered(entity, PeerId.Authority);
+        _registry[id] = new Registered(entity, owner);
         return id;
     }
 
@@ -366,9 +396,10 @@ public sealed class NetworkReplicator
 
 /// <summary>
 /// One entity in a client's reconstructed world: its id, archetype
-/// <see cref="Kind"/>, <see cref="Owner"/> (the controlling peer — always
-/// <see cref="PeerId.Authority"/> until B3 assigns client ownership), and the
-/// game's <see cref="INetEntityState"/> object that snapshots are applied to.
+/// <see cref="Kind"/>, <see cref="Owner"/> (the controlling peer —
+/// <see cref="PeerId.Authority"/> for world/server-owned, a client's
+/// <see cref="PeerId"/> for one that client drives), and the game's
+/// <see cref="INetEntityState"/> object that snapshots are applied to.
 /// </summary>
 /// <param name="Id">The authority-assigned entity id.</param>
 /// <param name="Kind">The archetype the entity was spawned from.</param>

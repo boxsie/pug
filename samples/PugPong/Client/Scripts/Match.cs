@@ -57,8 +57,13 @@ public partial class Match : Control
             var newY = _session.LocalPaddleY + dir * _paddleSpeed * (float)delta;
             _session.SetLocalPaddleY(newY);
             if (_session.Authority == MatchSession.Role.Guest)
-                _ = _session.SendInputAsync();
+                _session.SendInput();
         }
+
+        // Advance the netcode stack one frame: the host steps the sim + broadcasts,
+        // the guest applies the newest snapshot + drains events. Pumped here (not on
+        // a background loop) so the whole stack runs single-threaded off _Process.
+        _session.Pump(delta);
 
         // Render — pull state from session.
         _paddle0.Position = new Vector2(20f - PaddleW * 0.5f, _session.P0Y * ViewportH - PaddleH * 0.5f);

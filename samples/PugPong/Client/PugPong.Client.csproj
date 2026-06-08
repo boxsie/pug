@@ -30,11 +30,10 @@
 
   <ItemGroup>
     <!-- PongPayload schema is shared with the matchmaker sample — linked from
-         ../Matchmaker/Proto so both sides see the same wire format. GameMessage
-         is the in-match (host ↔ guest) envelope used over QueueHandle's
-         SendToPeerAsync / PeerMessages surface. -->
+         ../Matchmaker/Proto so both sides see the same wire format. The in-match
+         (host ↔ guest) wire is now PUG.Netcode's channel/replication/event format
+         over IPeerLink, not a proto envelope — see MatchSession. -->
     <Protobuf Include="..\Matchmaker\Proto\PongPayload.proto" Link="Proto\PongPayload.proto" GrpcServices="None" />
-    <Protobuf Include="Proto\GameMessage.proto" GrpcServices="None" />
   </ItemGroup>
 
 </Project>

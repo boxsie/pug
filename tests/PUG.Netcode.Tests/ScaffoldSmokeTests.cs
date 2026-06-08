@@ -23,7 +23,8 @@ public class ScaffoldSmokeTests
     {
         var referenced = Assembly.Load("PUG.Netcode")
             .GetReferencedAssemblies()
-            .Select(a => a.Name);
+            .Select(a => a.Name)
+            .ToArray();
 
         // The core must never reach for transport/infra. If any of these
         // shows up, something tier-specific leaked into the ascetic package.

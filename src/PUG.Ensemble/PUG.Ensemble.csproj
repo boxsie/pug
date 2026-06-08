@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\PUG.Core\PUG.Core.csproj" />
+    <ProjectReference Include="..\PUG.Netcode\PUG.Netcode.csproj" />
   </ItemGroup>
 
   <ItemGroup>

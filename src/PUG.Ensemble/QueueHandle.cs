@@ -40,7 +40,7 @@ namespace PUG.Ensemble;
 /// <typeparam name="TPayload">The host-supplied per-player payload type the
 ///   matchmaker bucket consumes. The SDK never deserialises it — only the
 ///   caller-supplied serializer is invoked, on send.</typeparam>
-public sealed class QueueHandle<TPayload> : IAsyncDisposable
+public sealed class QueueHandle<TPayload> : IAsyncDisposable, IPeerChannel
 {
     // Separate channels keep WaitForMatchAsync and StatusStream from racing
     // for events: introductions/errors fan into one channel, queue-status

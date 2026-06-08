@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 
 namespace PUG.Netcode;
@@ -33,6 +34,7 @@ public sealed class NetDiagnostics
 
     private readonly object _gate = new();
     private readonly List<(string Label, ChannelMux Mux)> _muxes = new();
+    private readonly List<(string Label, TimeSync Sync)> _timeSyncs = new();
     private Action<NetLogLevel, string> _logSink = NoSink;
 
     /// <summary>
@@ -43,6 +45,11 @@ public sealed class NetDiagnostics
     public Action<NetLogLevel, string> LogSink
     {
         get => _logSink;
+
+        // The property type is non-nullable, but the documented contract lets a
+        // caller assign null to restore the no-op sink — so the coalesce is real,
+        // not dead. (Tested by LogSink_SetToNull_RestoresNoOp.)
+        // ReSharper disable once NullCoalescingConditionIsAlwaysNotNullAccordingToAPIContract
         set => _logSink = value ?? NoSink;
     }
 
@@ -80,6 +87,21 @@ public sealed class NetDiagnostics
     }
 
     /// <summary>
+    /// Register a <see cref="TimeSync"/> so its RTT / tick-offset / sample count
+    /// appear in <see cref="Snapshot"/> and <see cref="Describe"/> under
+    /// <paramref name="label"/> (e.g. the synced peer's name).
+    /// </summary>
+    public void RegisterTimeSync(string label, TimeSync sync)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(label);
+        ArgumentNullException.ThrowIfNull(sync);
+        lock (_gate)
+        {
+            _timeSyncs.Add((label, sync));
+        }
+    }
+
+    /// <summary>
     /// Pull a fresh snapshot of every registered source's counters. Cheap enough
     /// to call each frame.
     /// </summary>
@@ -93,7 +115,13 @@ public sealed class NetDiagnostics
                 muxes[i] = new MuxDiagnostics(_muxes[i].Label, _muxes[i].Mux.Stats);
             }
 
-            return new NetDiagnosticsSnapshot(muxes);
+            var syncs = new TimeSyncDiagnostics[_timeSyncs.Count];
+            for (var i = 0; i < _timeSyncs.Count; i++)
+            {
+                syncs[i] = new TimeSyncDiagnostics(_timeSyncs[i].Label, _timeSyncs[i].Sync.Stats);
+            }
+
+            return new NetDiagnosticsSnapshot(muxes, syncs);
         }
     }
 
@@ -130,6 +158,15 @@ public sealed class NetDiagnostics
             }
         }
 
+        foreach (var sync in snapshot.TimeSyncs)
+        {
+            sb.Append("  timesync \"").Append(sync.Label).Append("\": rtt ")
+                .Append(sync.Stats.Rtt.TotalMilliseconds.ToString("0.0", CultureInfo.InvariantCulture)).Append("ms")
+                .Append(", offset ").Append(sync.Stats.TickOffset).Append(" ticks")
+                .Append(", samples ").Append(sync.Stats.SampleCount)
+                .AppendLine();
+        }
+
         return sb.ToString();
     }
 }
@@ -143,10 +180,20 @@ public sealed class NetDiagnostics
 public readonly record struct MuxDiagnostics(string Label, ChannelMuxStats Stats);
 
 /// <summary>
+/// One registered <see cref="TimeSync"/>'s estimate within a
+/// <see cref="NetDiagnosticsSnapshot"/>.
+/// </summary>
+/// <param name="Label">The label the time-sync was registered under.</param>
+/// <param name="Stats">Its RTT / tick-offset / sample count at poll time.</param>
+public readonly record struct TimeSyncDiagnostics(string Label, TimeSyncStats Stats);
+
+/// <summary>
 /// A point-in-time aggregate of everything <see cref="NetDiagnostics"/> can see.
-/// Grows a field per tier as they land (TimeSync RTT/offset, session link state,
-/// Tier B snapshot age, Tier C prediction error); today it carries the channel
-/// muxes.
+/// Grows a field per tier as they land (session link state, Tier B snapshot age,
+/// Tier C prediction error); today it carries the channel muxes and time-syncs.
 /// </summary>
 /// <param name="Muxes">Per-mux counters, in registration order.</param>
-public readonly record struct NetDiagnosticsSnapshot(IReadOnlyList<MuxDiagnostics> Muxes);
+/// <param name="TimeSyncs">Per-time-sync estimates, in registration order.</param>
+public readonly record struct NetDiagnosticsSnapshot(
+    IReadOnlyList<MuxDiagnostics> Muxes,
+    IReadOnlyList<TimeSyncDiagnostics> TimeSyncs);

@@ -35,6 +35,7 @@ public sealed class NetDiagnostics
     private readonly object _gate = new();
     private readonly List<(string Label, ChannelMux Mux)> _muxes = new();
     private readonly List<(string Label, TimeSync Sync)> _timeSyncs = new();
+    private readonly List<(string Label, NetworkReplicator Replicator)> _replicators = new();
     private Action<NetLogLevel, string> _logSink = NoSink;
 
     /// <summary>
@@ -102,6 +103,21 @@ public sealed class NetDiagnostics
     }
 
     /// <summary>
+    /// Register a <see cref="NetworkReplicator"/> so its entity / snapshot / age
+    /// counters appear in <see cref="Snapshot"/> and <see cref="Describe"/> under
+    /// <paramref name="label"/>.
+    /// </summary>
+    public void RegisterReplicator(string label, NetworkReplicator replicator)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(label);
+        ArgumentNullException.ThrowIfNull(replicator);
+        lock (_gate)
+        {
+            _replicators.Add((label, replicator));
+        }
+    }
+
+    /// <summary>
     /// Pull a fresh snapshot of every registered source's counters. Cheap enough
     /// to call each frame.
     /// </summary>
@@ -121,7 +137,13 @@ public sealed class NetDiagnostics
                 syncs[i] = new TimeSyncDiagnostics(_timeSyncs[i].Label, _timeSyncs[i].Sync.Stats);
             }
 
-            return new NetDiagnosticsSnapshot(muxes, syncs);
+            var replicators = new ReplicatorDiagnostics[_replicators.Count];
+            for (var i = 0; i < _replicators.Count; i++)
+            {
+                replicators[i] = new ReplicatorDiagnostics(_replicators[i].Label, _replicators[i].Replicator.Stats);
+            }
+
+            return new NetDiagnosticsSnapshot(muxes, syncs, replicators);
         }
     }
 
@@ -167,6 +189,27 @@ public sealed class NetDiagnostics
                 .AppendLine();
         }
 
+        foreach (var rep in snapshot.Replicators)
+        {
+            var s = rep.Stats;
+            sb.Append("  replicator \"").Append(rep.Label).Append("\" (")
+                .Append(s.IsAuthority ? "authority" : "client").Append("): entities ").Append(s.EntityCount)
+                .Append(", snapshots ").Append(s.SnapshotsProcessed)
+                .Append(", lastBytes ").Append(s.LastSnapshotBytes)
+                .Append(", age ").Append(s.SnapshotAgeTicks).Append(" ticks");
+            if (s.MalformedSnapshots > 0)
+            {
+                sb.Append(", malformed ").Append(s.MalformedSnapshots);
+            }
+
+            if (!s.IsAuthority)
+            {
+                sb.Append(", spawns ").Append(s.Spawns).Append(", despawns ").Append(s.Despawns);
+            }
+
+            sb.AppendLine();
+        }
+
         return sb.ToString();
     }
 }
@@ -188,12 +231,22 @@ public readonly record struct MuxDiagnostics(string Label, ChannelMuxStats Stats
 public readonly record struct TimeSyncDiagnostics(string Label, TimeSyncStats Stats);
 
 /// <summary>
+/// One registered <see cref="NetworkReplicator"/>'s counters within a
+/// <see cref="NetDiagnosticsSnapshot"/>.
+/// </summary>
+/// <param name="Label">The label the replicator was registered under.</param>
+/// <param name="Stats">Its entity / snapshot / age counters at poll time.</param>
+public readonly record struct ReplicatorDiagnostics(string Label, ReplicatorStats Stats);
+
+/// <summary>
 /// A point-in-time aggregate of everything <see cref="NetDiagnostics"/> can see.
-/// Grows a field per tier as they land (session link state, Tier B snapshot age,
-/// Tier C prediction error); today it carries the channel muxes and time-syncs.
+/// Grows a field per tier as they land (Tier C prediction error next); today it
+/// carries the channel muxes, time-syncs, and entity replicators.
 /// </summary>
 /// <param name="Muxes">Per-mux counters, in registration order.</param>
 /// <param name="TimeSyncs">Per-time-sync estimates, in registration order.</param>
+/// <param name="Replicators">Per-replicator counters, in registration order.</param>
 public readonly record struct NetDiagnosticsSnapshot(
     IReadOnlyList<MuxDiagnostics> Muxes,
-    IReadOnlyList<TimeSyncDiagnostics> TimeSyncs);
+    IReadOnlyList<TimeSyncDiagnostics> TimeSyncs,
+    IReadOnlyList<ReplicatorDiagnostics> Replicators);

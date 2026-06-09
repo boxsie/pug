@@ -142,9 +142,10 @@ On client A, click **Create private match** instead of Play. The Lobby shows a s
 
 - **Matchmaking queue** — `MatchmakerServiceHost<PongPayload>` hosting `FifoMatcher` with 1v1 team sizes
 - **Private match codes** — short-code creation + join-by-code, partitioned at the matcher so private and public players never cross-pair
-- **Post-match P2P** — `QueueHandle<T>.SendToPeerAsync` and `PeerMessages` for the in-match state stream (added in T17)
+- **Post-match P2P netcode** — the in-match wire runs the full `PUG.Netcode` stack over the matched `IPeerLink`: a `NetworkReplicator` snapshots the world (~30 Hz, KeepLatest), a `NetInputChannel` carries the guest's paddle up (latest-wins), a `NetEventChannel` delivers goal/match-end reliably, and a `TimeSync` on ch0 aligns the guest's clock to the host's.
+- **Tier C smoothing (opt-in `PUG.Netcode.Prediction`)** — the guest interpolates the ball and the host's paddle between snapshots, predicts its own paddle for zero-latency input, and reconciles it against authority without popping. The host is authoritative and runs none of it. Press **F3** in a match for the live netcode overlay (RTT, interp depth, predicted steps, corrections).
 
-The actual game-state protocol is in `Client/Proto/GameMessage.proto` — `MatchStatePacket` (host → guest, ~30 Hz), `InputPacket` (guest → host, on paddle move), `MatchEnd`. The matchmaker doesn't see any of it; it's gone after the introduction.
+There is no game-state proto: the host↔guest format is `PUG.Netcode`'s channel/replication/event framing over `IPeerLink`, not a proto envelope (see `Client/Scripts/MatchSession.cs`). The matchmaker doesn't see any of it; it's gone after the introduction.
 
 ## Layout
 

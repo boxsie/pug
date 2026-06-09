@@ -12,6 +12,7 @@ public partial class Match : Control
     private Label _score0 = null!;
     private Label _score1 = null!;
     private Label _status = null!;
+    private Label _debug = null!;
 
     private MatchSession? _session;
     private float _paddleSpeed = 1.2f; // 0..1 units per second
@@ -31,6 +32,18 @@ public partial class Match : Control
         _score0 = GetNode<Label>("Score0");
         _score1 = GetNode<Label>("Score1");
         _status = GetNode<Label>("Status");
+
+        // F3 netcode overlay — created in code (no .tscn churn), hidden until toggled.
+        // Reads NetDiagnostics.Snapshot().Describe() + live RTT through the cross-package
+        // INetStatSource hook (interp depth, predicted steps, reconciliation corrections).
+        _debug = new Label
+        {
+            Position = new Vector2(10, 10),
+            Visible = false,
+            Modulate = new Color(0.6f, 1f, 0.6f),
+        };
+        _debug.AddThemeFontSizeOverride("font_size", 14);
+        AddChild(_debug);
 
         var handle = SceneRouting.Handle ?? throw new InvalidOperationException("Match scene entered with no handle");
         var match = SceneRouting.Match ?? throw new InvalidOperationException("Match scene entered with no MatchFound");
@@ -72,6 +85,11 @@ public partial class Match : Control
         _score0.Text = _session.Score0.ToString();
         _score1.Text = _session.Score1.ToString();
 
+        if (_debug.Visible)
+        {
+            _debug.Text = _session.DiagnosticsText();
+        }
+
         if (_session.Ended && !_exitScheduled)
         {
             _exitScheduled = true;
@@ -79,6 +97,15 @@ public partial class Match : Control
             var iWon = (localIsHost && _session.Winner == 0) || (!localIsHost && _session.Winner == 1);
             _status.Text = iWon ? "You win!" : "You lose";
             _ = ReturnToSplashAfterDelay();
+        }
+    }
+
+    public override void _Input(InputEvent @event)
+    {
+        // Toggle the netcode overlay on F3 (edge, not repeat).
+        if (@event is InputEventKey { Pressed: true, Echo: false, Keycode: Key.F3 })
+        {
+            _debug.Visible = !_debug.Visible;
         }
     }
 

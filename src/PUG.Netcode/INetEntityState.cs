@@ -17,9 +17,12 @@ namespace PUG.Netcode;
 /// </para>
 ///
 /// <para>
-/// Tier C will grow this contract with a <c>Simulate(state, input, dt)</c> for
-/// client-side prediction; B1 needs only write/apply, so that stays out until
-/// there's a predictor to use it.
+/// This contract is deliberately NOT grown for Tier C. Prediction/interpolation
+/// capabilities are opt-in marker interfaces in the separate
+/// <c>PUG.Netcode.Prediction</c> package (<c>INetInterpolable</c>,
+/// <c>INetPredictable</c>/<c>INetReconcilable</c>) that <i>extend</i> this one, so a
+/// pure-replication game pays nothing for smoothing it doesn't use. The Tier C
+/// strategies type-test for them and fall back to a hard snap when absent.
 /// </para>
 /// </summary>
 public interface INetEntityState

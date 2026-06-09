@@ -7,15 +7,14 @@ using System.Threading.Tasks;
 using Godot;
 using PUG.Ensemble;
 using PUG.Netcode;
+using PUG.Netcode.Prediction;
 using PugPong.Proto;
 
 namespace PugPong.Client;
 
 /// <summary>
-/// In-match networking + simulation glue, rebuilt on the <c>PUG.Netcode</c> stack.
-/// The hand-rolled <c>SendToPeerAsync</c>/<c>PeerMessages</c> + proto-oneof transport
-/// is gone; everything now rides a <see cref="NetSession"/> over the Ensemble peer
-/// link:
+/// In-match networking + simulation glue on the <c>PUG.Netcode</c> stack, now with the
+/// opt-in <c>PUG.Netcode.Prediction</c> (Tier C) feel layer wired on the guest:
 /// <list type="bullet">
 /// <item>world state (ball / both paddles / score) replicates as quantized
 ///   <see cref="INetEntityState"/> entities through a <see cref="NetworkReplicator"/>
@@ -24,27 +23,30 @@ namespace PugPong.Client;
 ///   <see cref="NetInputChannel"/> (Tier B3, latest-wins);</item>
 /// <item>goal / match-end are discrete <see cref="NetEventChannel"/> events on the
 ///   Ordered channel (Tier B2 — reliable, never dropped);</item>
+/// <item>a pumped <see cref="TimeSync"/> on ch0 (Tier A3) gives the guest the
+///   authority-tick domain it renders interpolation in;</item>
 /// <item>the host simulation is driven by a pumped <see cref="TickClock"/> out of
 ///   Godot <c>_Process</c> — a real-clock accumulator, no <c>Task.Delay</c>, no
 ///   background sim thread.</item>
 /// </list>
 ///
 /// <para>
-/// <b>Authority is injected, never elected by the core.</b> Alphabetical-host: the
-/// lower-sorting player-service address owns the world (<see cref="Role.Host"/>) and
-/// the result is handed to <see cref="NetSession"/> as a designation. At 1v1 the one
-/// client is always <see cref="PeerId"/> 1, so no wire id-assignment is needed (the
-/// host tags the guest's paddle owner = peer 1; the guest's injected
-/// <see cref="NetSession.SelfId"/> is peer 1 — they match by construction).
+/// <b>Tier C is guest-only.</b> The host is authoritative truth and needs no smoothing
+/// (<c>c25df4da</c>: in alphabetical-host P2P the GUEST is the choppy side). On the guest:
+/// the ball and the host's paddle are <see cref="INetInterpolable"/> and rendered <i>between</i>
+/// snapshots by an <see cref="InterpolatingApplyStrategy"/> at a render time held in the past
+/// (C1); the guest's OWN paddle is <see cref="INetReconcilable"/> — predicted on the input frame
+/// for zero-latency feel (C2), excluded from interpolation so a stale snapshot can't rubber-band
+/// it, and reconciled against authority without popping (C3). The host pumps TimeSync only as a
+/// ping responder and short-circuits every Tier C step.
 /// </para>
 ///
 /// <para>
-/// <b>No smoothing yet.</b> The guest applies snapshots immediately
-/// (<c>ImmediateApply</c>) — it renders the ~30 Hz authoritative world directly, same
-/// as the prototype did. Interpolation / prediction is Tier C; it drops into B1's
-/// <see cref="ISnapshotApplyStrategy"/> seam later with no change here. The guest's
-/// <i>own</i> paddle is rendered from local input for responsiveness (predict-lite,
-/// no reconciliation), exactly as before.
+/// <b>Authority is injected, never elected by the core.</b> Alphabetical-host: the lower-sorting
+/// player-service address owns the world (<see cref="Role.Host"/>). At 1v1 the one client is
+/// always <see cref="PeerId"/> 1, so no wire id-assignment is needed (the host tags the guest's
+/// paddle owner = peer 1; the guest's injected <see cref="NetSession.SelfId"/> is peer 1 — they
+/// match by construction).
 /// </para>
 /// </summary>
 public sealed class MatchSession : IAsyncDisposable
@@ -61,9 +63,8 @@ public sealed class MatchSession : IAsyncDisposable
     public const float SimTickHz = 60f;
     public const float SendHz = 30f;
 
-    // Channel layout, declared identically on both ends. ch0 is reserved for A3
-    // TimeSync (Tier C era) — declared so the wire numbering is stable, not pumped
-    // yet (no interpolation delay to place without it).
+    // Channel layout, declared identically on both ends. ch0 carries A3 TimeSync,
+    // pumped on both ends now (C5): the guest auto-pings, the host answers.
     private const byte ChTime = 0;
     private const byte ChSnapshot = 1;
     private const byte ChInput = 2;
@@ -89,15 +90,23 @@ public sealed class MatchSession : IAsyncDisposable
     // with this; the guest is constructed with this SelfId — they match).
     private static readonly PeerId GuestId = new(1);
 
+    private static readonly TimeSpan SimDt = TimeSpan.FromSeconds(1.0 / SimTickHz);
+
     private readonly NetSession _session;
     private readonly NetDiagnostics _diagnostics;
     private readonly TickClock _clock;
     private readonly NetworkReplicator _replicator;
     private readonly NetEventChannel _events;
     private readonly NetInputChannel _input;
+    private readonly TimeSync? _timeSync;
     private readonly Random _rng = new();
     private readonly List<GameEvent> _eventSink = new();
     private readonly byte[] _inputScratch = new byte[2];
+
+    // Guest-only Tier C lanes. Null on the host (it IS authority — no smoothing).
+    private readonly InterpolatingApplyStrategy? _interp;
+    private readonly Predictor? _predictor;
+    private readonly Reconciler? _reconciler;
 
     // Host-authoritative world. These objects ARE the host's sim state; the
     // replicator serializes the parts the guest needs. On the guest they stay null —
@@ -107,7 +116,13 @@ public sealed class MatchSession : IAsyncDisposable
     private readonly PaddleEntity? _guestPaddle; // P1, right, owner = peer 1
     private readonly ScoreEntity? _score;
 
+    // Guest: the reconstructed PaddleEntity it owns (P1). Resolved lazily once the
+    // first snapshot spawns it, then excluded from interpolation and driven by the
+    // predict/reconcile lane.
+    private PaddleEntity? _ownPaddle;
+
     private Task? _snapshotInFlight; // serializes CaptureAndBroadcast's reused buffer
+    private Task? _timeSyncInFlight; // serializes TimeSync's ch0 receive/send pump
     private float _sendAccumulator;  // host snapshot cadence (~SendHz)
     private int _sendErrorLogged;
     private int _disposed;
@@ -124,8 +139,8 @@ public sealed class MatchSession : IAsyncDisposable
     public int Winner = -1;
 
     // Local paddle command applied each render frame; the host writes its own paddle
-    // here, the guest writes its predicted paddle here AND sends it up the input
-    // channel.
+    // here, the guest writes its predicted paddle target here AND sends it up the
+    // input channel (where it also drives the prediction lane).
     public float LocalPaddleY = 0.5f;
 
     /// <param name="localServiceAddr">This player's own Ensemble player-service
@@ -177,13 +192,35 @@ public sealed class MatchSession : IAsyncDisposable
         }
         else
         {
+            // Tier C lanes (guest only). The interpolating strategy is the B1 apply
+            // seam doing its job — remote entities blend between snapshots; the owned
+            // paddle is excluded (below) and predicted instead.
+            _interp = new InterpolatingApplyStrategy();
+            _predictor = new Predictor();
+            _reconciler = new Reconciler(_predictor, SimDt);
+
             _session = NetSession.CreateClient(link, Channels, GuestId, "host", _diagnostics);
-            _replicator = NetworkReplicator.CreateClient(_session, ChSnapshot, Spawn);
+            _replicator = NetworkReplicator.CreateClient(_session, ChSnapshot, Spawn, _interp, onDespawn: ForgetEntity);
+
+            _diagnostics.RegisterSource("interp", _interp);
+            _diagnostics.RegisterSource("predict", _predictor);
+            _diagnostics.RegisterSource("reconcile", _reconciler);
         }
 
         _diagnostics.RegisterReplicator("world", _replicator);
         _events = new NetEventChannel(_session, ChEvents);
         _input = new NetInputChannel(_session, ChInput);
+
+        // A3 TimeSync on ch0. The guest auto-pings to learn the authority-tick offset
+        // it renders interpolation in; the host only answers (responder, no pinging).
+        var syncMux = Authority == Role.Host
+            ? (_session.Peers.Count > 0 ? _session.Peers[0].Mux : null)
+            : _session.AuthorityPeer?.Mux;
+        if (syncMux is not null)
+        {
+            _timeSync = new TimeSync(syncMux, ChTime, _clock,
+                new TimeSyncOptions { AutoPing = Authority == Role.Guest });
+        }
     }
 
     public void Start()
@@ -197,8 +234,9 @@ public sealed class MatchSession : IAsyncDisposable
         }
     }
 
-    /// <summary>Scene-side: apply local paddle input. Host moves P0; guest moves P1
-    /// locally (responsive) and the next <see cref="SendInput"/> ships it up.</summary>
+    /// <summary>Scene-side: apply local paddle input. Host moves P0 directly; the guest
+    /// only records the target — the prediction lane (see <see cref="SendInput"/>) drives
+    /// its paddle entity, and render reads that.</summary>
     public void SetLocalPaddleY(float y)
     {
         y = Math.Clamp(y, PaddleHalfHeight, 1f - PaddleHalfHeight);
@@ -208,18 +246,11 @@ public sealed class MatchSession : IAsyncDisposable
             _hostPaddle!.Y = y;
             P0Y = y;
         }
-        else
-        {
-            // Guest renders its own paddle from local input for responsiveness; the
-            // authoritative copy still arrives in snapshots but we don't snap to it
-            // (predict-lite, no reconciliation — that's Tier C).
-            P1Y = y;
-        }
     }
 
-    /// <summary>Guest-side: ship the local paddle up the input channel. No-op on the
-    /// host. Fire-and-forget: the frame is built synchronously (fresh buffer), and a
-    /// dropped input is harmless on the latest-wins channel.</summary>
+    /// <summary>Guest-side: predict the owned paddle on this frame and ship the input up.
+    /// No-op on the host. Fire-and-forget send (fresh buffer); a dropped input is harmless
+    /// on the latest-wins channel.</summary>
     public void SendInput()
     {
         if (Authority != Role.Guest)
@@ -227,14 +258,30 @@ public sealed class MatchSession : IAsyncDisposable
             return;
         }
 
+        // Stamp with the tick the AUTHORITY will process this on (local tick + the
+        // TimeSync offset), so reconciliation can line the snapshot up against the
+        // right buffered input. The host ignores the stamp (latest-wins), but the
+        // guest's own replay depends on it.
+        var authorityTick = AuthorityTickNow();
         BinaryPrimitives.WriteUInt16BigEndian(_inputScratch, Quantize(LocalPaddleY));
-        _ = SafeSendAsync(_input.SendToAuthorityAsync((uint)_clock.CurrentTick, _inputScratch).AsTask());
+
+        // Predict immediately for zero-latency feel: Simulate sets the paddle's Y from
+        // the input. Buffers the input for C3 replay. The owned paddle is null until the
+        // first snapshot spawns it (resolved in PumpGuest) — until then render falls back
+        // to LocalPaddleY and there's nothing to predict yet.
+        if (_ownPaddle is not null)
+        {
+            _predictor!.Predict(_ownPaddle, _inputScratch, authorityTick, SimDt);
+        }
+
+        _ = SafeSendAsync(_input.SendToAuthorityAsync(authorityTick, _inputScratch).AsTask());
     }
 
     /// <summary>Advance the session one engine frame — call once from
     /// <c>_Process(delta)</c>. The whole stack is pumped here: no background loop.</summary>
     public void Pump(double delta)
     {
+        PumpTimeSync();
         if (Authority == Role.Host)
         {
             PumpHost(delta);
@@ -242,6 +289,38 @@ public sealed class MatchSession : IAsyncDisposable
         else
         {
             PumpGuest(delta);
+        }
+    }
+
+    /// <summary>A compact diagnostics line for the F3 overlay — live RTT plus the Tier C
+    /// counters pulled through the cross-package <see cref="INetStatSource"/> hook. Built
+    /// on demand (the overlay is toggled), so the per-frame allocation only happens when
+    /// it's visible.</summary>
+    public string DiagnosticsText()
+    {
+        var rttMs = _timeSync?.Rtt.TotalMilliseconds ?? 0;
+        if (Authority == Role.Host)
+        {
+            return $"HOST  tick={Tick}  rtt={rttMs:F0}ms  peers={_session.Peers.Count}\n{_diagnostics.Describe()}";
+        }
+
+        return $"GUEST tick={Tick}  rtt={rttMs:F0}ms  offset={_timeSync?.TickOffset ?? 0}\n{_diagnostics.Describe()}";
+    }
+
+    private void PumpTimeSync()
+    {
+        if (_timeSync is null)
+        {
+            return;
+        }
+
+        // Fire-and-forget, single in-flight: UpdateAsync drains ch0 (answer pings, fold
+        // pongs) then maybe sends — guard it like the snapshot so two pumps don't race the
+        // ch0 queue. A skipped frame just folds next frame; the 100 ms ping cadence is slow.
+        if (_timeSyncInFlight is null || _timeSyncInFlight.IsCompleted)
+        {
+            _timeSyncInFlight = _timeSync.UpdateAsync().AsTask();
+            _ = SafeSendAsync(_timeSyncInFlight);
         }
     }
 
@@ -282,11 +361,31 @@ public sealed class MatchSession : IAsyncDisposable
 
     private void PumpGuest(double delta)
     {
-        // Advance the local clock only to stamp outgoing input ticks consistently.
+        // Advance the local clock — both to stamp outgoing input ticks and to place the
+        // interpolation render time in authority-tick space.
         _clock.Advance(TimeSpan.FromSeconds(delta));
 
-        // Apply the newest authoritative snapshot, then read the reconstructed world.
+        // Land the newest authoritative snapshot. Remote interpolable entities (ball,
+        // host paddle) are BUFFERED here (not snapped); the owned paddle, once excluded,
+        // is CAPTURED for reconciliation rather than applied.
         _replicator.Apply();
+
+        ResolveOwnPaddle();
+
+        // C3: rewind the owned paddle to its latest authoritative state and replay the
+        // unconfirmed local inputs, easing the visible paddle toward the corrected state.
+        if (_ownPaddle is not null && _interp!.TryGetLatestAuthoritative(_ownPaddle, out var authTick, out var authState))
+        {
+            _reconciler!.Reconcile(_ownPaddle, authTick, authState);
+        }
+
+        // C1: blend remote entities toward a render time held in the past so a bracketing
+        // pair of snapshots always straddles it. renderTick is in authority-tick space.
+        var authorityNow = AuthorityTickNow();
+        var renderTick = authorityNow >= _interp!.InterpDelayTicks ? authorityNow - _interp.InterpDelayTicks : 0u;
+        _interp.Render(renderTick);
+
+        // Read the (now interpolated / reconciled) world into render fields.
         foreach (var entity in _replicator.Entities.Values)
         {
             switch (entity.Kind)
@@ -297,12 +396,10 @@ public sealed class MatchSession : IAsyncDisposable
                     BallY = ball.Y;
                     break;
                 case KindPaddle when entity.Owner.IsAuthority:
-                    P0Y = ((PaddleEntity)entity.State).Y; // host's paddle (remote)
+                    P0Y = ((PaddleEntity)entity.State).Y; // host's paddle (interpolated)
                     break;
                 case KindPaddle:
-                    // My own paddle: rendered from local input (see SetLocalPaddleY),
-                    // so we deliberately ignore the authoritative copy here.
-                    break;
+                    break; // my own paddle — read below from the predicted entity
                 case KindScore:
                     var score = (ScoreEntity)entity.State;
                     Score0 = score.S0;
@@ -310,6 +407,10 @@ public sealed class MatchSession : IAsyncDisposable
                     break;
             }
         }
+
+        // Own paddle: the predicted + reconciled state (responsive); fall back to the raw
+        // local target until the snapshot has spawned the entity.
+        P1Y = _ownPaddle?.Y ?? LocalPaddleY;
 
         Tick = (uint)_clock.CurrentTick;
 
@@ -338,6 +439,40 @@ public sealed class MatchSession : IAsyncDisposable
                     Score1 = ev.Payload.Span[3];
                     break;
             }
+        }
+    }
+
+    /// <summary>Guest: find the reconstructed paddle this client owns (peer 1) once a
+    /// snapshot has spawned it, then exclude it from the interpolation lane so it's driven
+    /// purely by predict + reconcile (no rubber-band, per <c>c25df4da</c>).</summary>
+    private void ResolveOwnPaddle()
+    {
+        if (_ownPaddle is not null)
+        {
+            return;
+        }
+
+        foreach (var entity in _replicator.EntitiesOwnedBy(GuestId))
+        {
+            if (entity.Kind == KindPaddle)
+            {
+                _ownPaddle = (PaddleEntity)entity.State;
+                _interp!.Exclude(_ownPaddle);
+                break;
+            }
+        }
+    }
+
+    /// <summary>Authority tick "now" = local tick + the TimeSync offset (authority − local).
+    /// Falls back to the bare local tick before the first pong folds in.</summary>
+    private uint AuthorityTickNow() => (uint)((long)_clock.CurrentTick + (_timeSync?.TickOffset ?? 0));
+
+    private void ForgetEntity(ushort id, INetEntityState entity)
+    {
+        _interp?.Forget(entity);
+        if (ReferenceEquals(entity, _ownPaddle))
+        {
+            _ownPaddle = null;
         }
     }
 
@@ -461,6 +596,9 @@ public sealed class MatchSession : IAsyncDisposable
 
     private static float Dequantize(ushort q) => q / 65535f;
 
+    private static float DequantizeAt(ReadOnlySpan<byte> state, int offset) =>
+        Dequantize(BinaryPrimitives.ReadUInt16BigEndian(state.Slice(offset)));
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -485,10 +623,11 @@ public sealed class MatchSession : IAsyncDisposable
         await _session.DisposeAsync().ConfigureAwait(false);
     }
 
-    /// <summary>The ball: full sim state lives here (the host integrates Vx/Vy); only
-    /// the quantized position is replicated — the guest renders position directly and
-    /// derives nothing from velocity (no smoother yet).</summary>
-    private sealed class BallEntity : INetEntityState
+    /// <summary>The ball: full sim state lives here (the host integrates Vx/Vy); only the
+    /// quantized position is replicated. As an <see cref="INetInterpolable"/> the guest
+    /// renders it BETWEEN snapshots — Vx/Vy stay host-only (the guest derives nothing from
+    /// velocity; the smoother is positional, per c25df4da).</summary>
+    private sealed class BallEntity : INetInterpolable
     {
         public float X = 0.5f, Y = 0.5f, Vx, Vy;
 
@@ -504,15 +643,26 @@ public sealed class MatchSession : IAsyncDisposable
 
         public void ApplyState(ReadOnlySpan<byte> state)
         {
-            X = Dequantize(BinaryPrimitives.ReadUInt16BigEndian(state));
-            Y = Dequantize(BinaryPrimitives.ReadUInt16BigEndian(state.Slice(2)));
+            X = DequantizeAt(state, 0);
+            Y = DequantizeAt(state, 2);
         }
+
+        public void ApplyInterpolated(ReadOnlySpan<byte> from, ReadOnlySpan<byte> to, float t)
+        {
+            X = Lerp(DequantizeAt(from, 0), DequantizeAt(to, 0), t);
+            Y = Lerp(DequantizeAt(from, 2), DequantizeAt(to, 2), t);
+        }
+
+        private static float Lerp(float a, float b, float t) => a + ((b - a) * t);
     }
 
     /// <summary>A paddle: just its quantized Y. Which side it is comes from
-    /// <see cref="ReplicatedEntity.Owner"/> (authority = host/left, peer 1 = guest/
-    /// right), not from the state.</summary>
-    private sealed class PaddleEntity : INetEntityState
+    /// <see cref="ReplicatedEntity.Owner"/> (authority = host/left, peer 1 = guest/right),
+    /// not from the state. Implements BOTH Tier C lanes so the same type serves either
+    /// role on the guest: the REMOTE (host) paddle is <see cref="INetInterpolable"/>; the
+    /// OWNED paddle is <see cref="INetReconcilable"/> — predicted, then corrected by
+    /// blending. The game owns the byte interpretation; netcode stays opaque.</summary>
+    private sealed class PaddleEntity : INetInterpolable, INetReconcilable
     {
         public float Y = 0.5f;
 
@@ -525,13 +675,33 @@ public sealed class MatchSession : IAsyncDisposable
             writer.Advance(2);
         }
 
-        public void ApplyState(ReadOnlySpan<byte> state) =>
-            Y = Dequantize(BinaryPrimitives.ReadUInt16BigEndian(state));
+        public void ApplyState(ReadOnlySpan<byte> state) => Y = DequantizeAt(state, 0);
+
+        public void ApplyInterpolated(ReadOnlySpan<byte> from, ReadOnlySpan<byte> to, float t)
+        {
+            var a = DequantizeAt(from, 0);
+            var b = DequantizeAt(to, 0);
+            Y = a + ((b - a) * t);
+        }
+
+        // The paddle's input IS its target Y (state-ish input, latest-wins). Simulating a
+        // step is just adopting that target; dt plays no part. Replay applies the
+        // unconfirmed targets in order, so the latest wins — exactly right.
+        public void Simulate(ReadOnlySpan<byte> input, TimeSpan dt) => Y = DequantizeAt(input, 0);
+
+        // Ease the visible paddle toward the reconciler's corrected target, so a divergence
+        // decays over a few snapshots instead of popping.
+        public void BlendCorrection(ReadOnlySpan<byte> target, float t)
+        {
+            var to = DequantizeAt(target, 0);
+            Y += (to - Y) * t;
+        }
     }
 
-    /// <summary>The scoreboard: two small counts (cap 5, a byte each). Continuous
-    /// state, so it self-heals through the snapshot stream — the goal EVENT is just a
-    /// notification, this is the truth.</summary>
+    /// <summary>The scoreboard: two small counts (cap 5, a byte each). Discrete state — it
+    /// is NOT interpolable, so the strategy snaps it through <see cref="ApplyState"/>
+    /// (parity with ImmediateApply). The goal EVENT is just a notification; this is the
+    /// truth and self-heals through the snapshot stream.</summary>
     private sealed class ScoreEntity : INetEntityState
     {
         public int S0, S1;

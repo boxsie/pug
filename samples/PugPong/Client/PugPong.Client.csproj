@@ -18,6 +18,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\src\PUG.Ensemble\PUG.Ensemble.csproj" />
+    <!-- The opt-in Tier C feel layer (interpolation + prediction + reconciliation).
+         PugPong is the first consumer to toggle it on — the netcode mirror of a game
+         opting into PUG.Matchmaking.Ranked. PUG.Netcode (core) arrives transitively. -->
+    <ProjectReference Include="..\..\..\src\PUG.Netcode.Prediction\PUG.Netcode.Prediction.csproj" />
   </ItemGroup>
 
   <ItemGroup>

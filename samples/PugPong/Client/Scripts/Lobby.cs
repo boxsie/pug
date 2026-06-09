@@ -61,6 +61,7 @@ public partial class Lobby : Control
         catch (OperationCanceledException) { /* cancelled by user */ }
         catch (Exception ex)
         {
+            GD.PrintErr($"[Lobby] queue error: {ex}");
             SceneRouting.LastError = ex.Message;
             CallDeferred(MethodName.GoToSplash);
         }

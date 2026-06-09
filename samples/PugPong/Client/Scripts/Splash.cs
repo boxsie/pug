@@ -44,7 +44,11 @@ public partial class Splash : Control
     private async Task ConnectAsync()
     {
         try { await EnsembleBridge.Instance.StartAsync().ConfigureAwait(false); }
-        catch (Exception ex) { CallDeferred(MethodName.SetStatus, $"daemon error: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[Splash] daemon connect error: {ex}");
+            CallDeferred(MethodName.SetStatus, $"daemon error: {ex.Message}");
+        }
     }
 
     private void SetStatus(string text) => _status.Text = text;

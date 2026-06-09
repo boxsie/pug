@@ -38,6 +38,9 @@ public sealed class InterpolatingApplyStrategy : ISnapshotApplyStrategy, INetSta
     private readonly Dictionary<INetInterpolable, EntityInterpBuffer> _buffers =
         new(ReferenceEqualityComparer.Instance);
 
+    private readonly HashSet<INetEntityState> _excluded =
+        new(ReferenceEqualityComparer.Instance);
+
     private long _underruns;
     private uint _lastRenderTick;
 
@@ -75,6 +78,14 @@ public sealed class InterpolatingApplyStrategy : ISnapshotApplyStrategy, INetSta
     public void Apply(INetEntityState entity, uint snapshotTick, ReadOnlySpan<byte> state)
     {
         ArgumentNullException.ThrowIfNull(entity);
+
+        // A locally-predicted entity owns its own state (prediction lane + C3 reconciliation);
+        // the interp lane must not touch it, or it snaps the prediction back to a stale
+        // authoritative sample every snapshot — the c25df4da rubber-band. Drop it here.
+        if (_excluded.Contains(entity))
+        {
+            return;
+        }
 
         if (entity is INetInterpolable interpolable)
         {
@@ -129,12 +140,30 @@ public sealed class InterpolatingApplyStrategy : ISnapshotApplyStrategy, INetSta
     }
 
     /// <summary>
-    /// Stop tracking <paramref name="entity"/> and drop its buffered samples. Wire this to the
-    /// replicator's <c>onDespawn</c> so a vanished entity's buffer doesn't leak or get rendered
-    /// after it's gone.
+    /// Exclude <paramref name="entity"/> from this strategy entirely — neither interpolated nor
+    /// snapped. Call it on the locally-predicted owned entity (the prediction lane drives its
+    /// state) so a snapshot can't overwrite the prediction. Idempotent; also drops any buffered
+    /// samples the entity had accrued.
+    /// </summary>
+    public void Exclude(INetEntityState entity)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+        _excluded.Add(entity);
+        if (entity is INetInterpolable interpolable)
+        {
+            _buffers.Remove(interpolable);
+        }
+    }
+
+    /// <summary>
+    /// Stop tracking <paramref name="entity"/>: drop its buffered samples and clear any
+    /// exclusion. Wire this to the replicator's <c>onDespawn</c> so a vanished entity's buffer
+    /// doesn't leak or get rendered after it's gone.
     /// </summary>
     public void Forget(INetEntityState entity)
     {
+        ArgumentNullException.ThrowIfNull(entity);
+        _excluded.Remove(entity);
         if (entity is INetInterpolable interpolable)
         {
             _buffers.Remove(interpolable);

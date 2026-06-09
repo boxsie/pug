@@ -182,6 +182,40 @@ public sealed class InterpolatingApplyStrategyTests
         Assert.Contains("interp", diagnostics.Describe());
     }
 
+    [Fact]
+    public void ExcludedEntity_IsDropped_NotSnapped_PreventsRubberBand()
+    {
+        var strategy = new InterpolatingApplyStrategy();
+        var owned = new SnapOnly();
+
+        // The owned/predicted entity is excluded so a snapshot can't clobber the prediction.
+        strategy.Exclude(owned);
+        strategy.Apply(owned, snapshotTick: 1, Pos(42));
+        Assert.Equal(0, owned.AppliedCount); // dropped — not snapped to the stale authoritative value
+
+        // Forget clears the exclusion (e.g. on despawn): the normal snap path resumes.
+        strategy.Forget(owned);
+        strategy.Apply(owned, snapshotTick: 2, Pos(7));
+        Assert.Equal(1, owned.AppliedCount);
+        Assert.Equal(7, owned.Value);
+    }
+
+    [Fact]
+    public void ExcludedInterpolable_IsNeitherBufferedNorRendered()
+    {
+        var strategy = new InterpolatingApplyStrategy(interpDelayTicks: 2, bufferCapacity: 16);
+        var point = new Point();
+        strategy.Exclude(point);
+
+        FeedLinear(strategy, point, 0, 10, 2);
+        strategy.Render(6);
+
+        // Excluded interpolable accrued no buffer and was never moved by Render.
+        Assert.Equal(0f, point.X);
+        var stats = strategy.SampleStats().ToDictionary(s => s.Name, s => s.Value);
+        Assert.Equal(0d, stats["entities"]);
+    }
+
     /// <summary>A 1-D interpolable entity: position quantized to an int16, lerped linearly.</summary>
     private sealed class Point : INetInterpolable
     {

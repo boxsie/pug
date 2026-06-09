@@ -84,6 +84,18 @@ public sealed class Predictor : INetStatSource
         return true;
     }
 
+    /// <summary>
+    /// Drop buffered inputs the authority has confirmed — those stamped at or before
+    /// <paramref name="ackTick"/> (wrap-aware). Call after reconciling against a snapshot at that
+    /// tick so future replays only re-apply still-unconfirmed inputs and the ring doesn't grow
+    /// unbounded under steady play.
+    /// </summary>
+    public void AckThrough(uint ackTick) => _inputs.RemoveAll(input => !IsAfter(input.Tick, ackTick));
+
+    /// <summary>True if <paramref name="candidate"/> is a strictly later tick than
+    /// <paramref name="reference"/>, accounting for u32 wraparound.</summary>
+    internal static bool IsAfter(uint candidate, uint reference) => (int)(candidate - reference) > 0;
+
     /// <inheritdoc />
     public IReadOnlyList<NetStat> SampleStats() =>
     [

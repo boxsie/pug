@@ -201,6 +201,22 @@ public sealed class InterpolatingApplyStrategyTests
     }
 
     [Fact]
+    public void ExcludedEntity_CapturesLatestAuthoritative_ForReconciliation()
+    {
+        var strategy = new InterpolatingApplyStrategy();
+        var owned = new SnapOnly();
+        strategy.Exclude(owned);
+        Assert.False(strategy.TryGetLatestAuthoritative(owned, out _, out _)); // nothing seen yet
+
+        strategy.Apply(owned, snapshotTick: 5, Pos(42));
+
+        Assert.True(strategy.TryGetLatestAuthoritative(owned, out var tick, out var state));
+        Assert.Equal(5u, tick);
+        Assert.Equal(42, BinaryPrimitives.ReadInt16BigEndian(state)); // the reconciler's rewind bytes
+        Assert.Equal(0, owned.AppliedCount); // captured, NOT applied to the entity (no rubber-band)
+    }
+
+    [Fact]
     public void ExcludedInterpolable_IsNeitherBufferedNorRendered()
     {
         var strategy = new InterpolatingApplyStrategy(interpDelayTicks: 2, bufferCapacity: 16);

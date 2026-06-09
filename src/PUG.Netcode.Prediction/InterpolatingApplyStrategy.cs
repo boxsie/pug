@@ -38,7 +38,7 @@ public sealed class InterpolatingApplyStrategy : ISnapshotApplyStrategy, INetSta
     private readonly Dictionary<INetInterpolable, EntityInterpBuffer> _buffers =
         new(ReferenceEqualityComparer.Instance);
 
-    private readonly HashSet<INetEntityState> _excluded =
+    private readonly Dictionary<INetEntityState, ExcludedAuthoritative> _excluded =
         new(ReferenceEqualityComparer.Instance);
 
     private long _underruns;
@@ -81,9 +81,13 @@ public sealed class InterpolatingApplyStrategy : ISnapshotApplyStrategy, INetSta
 
         // A locally-predicted entity owns its own state (prediction lane + C3 reconciliation);
         // the interp lane must not touch it, or it snaps the prediction back to a stale
-        // authoritative sample every snapshot — the c25df4da rubber-band. Drop it here.
-        if (_excluded.Contains(entity))
+        // authoritative sample every snapshot — the c25df4da rubber-band. Don't apply it; just
+        // record the authoritative sample so the reconciler can pull it (TryGetLatestAuthoritative).
+        if (_excluded.TryGetValue(entity, out var excludedSlot))
         {
+            excludedSlot.Tick = snapshotTick;
+            excludedSlot.State = state.ToArray();
+            excludedSlot.Has = true;
             return;
         }
 
@@ -148,11 +152,35 @@ public sealed class InterpolatingApplyStrategy : ISnapshotApplyStrategy, INetSta
     public void Exclude(INetEntityState entity)
     {
         ArgumentNullException.ThrowIfNull(entity);
-        _excluded.Add(entity);
+        if (!_excluded.ContainsKey(entity))
+        {
+            _excluded[entity] = new ExcludedAuthoritative();
+        }
+
         if (entity is INetInterpolable interpolable)
         {
             _buffers.Remove(interpolable);
         }
+    }
+
+    /// <summary>
+    /// Get the latest authoritative sample recorded for an excluded (predicted) entity, if a
+    /// snapshot has carried it yet — the bytes the interp lane declined to apply. The reconciler
+    /// pulls this each frame to rewind + replay. The returned span is valid until the next snapshot
+    /// for this entity overwrites it.
+    /// </summary>
+    public bool TryGetLatestAuthoritative(INetEntityState entity, out uint tick, out ReadOnlySpan<byte> state)
+    {
+        if (_excluded.TryGetValue(entity, out var slot) && slot.Has)
+        {
+            tick = slot.Tick;
+            state = slot.State;
+            return true;
+        }
+
+        tick = 0;
+        state = default;
+        return false;
     }
 
     /// <summary>
@@ -178,6 +206,17 @@ public sealed class InterpolatingApplyStrategy : ISnapshotApplyStrategy, INetSta
         new("underruns", _underruns),
         new("lastRenderTick", _lastRenderTick),
     ];
+
+    /// <summary>Latest authoritative sample held for an excluded entity (the bytes not applied to
+    /// it). Mutable in place to avoid per-snapshot dictionary churn.</summary>
+    private sealed class ExcludedAuthoritative
+    {
+        public uint Tick { get; set; }
+
+        public byte[] State { get; set; } = [];
+
+        public bool Has { get; set; }
+    }
 }
 
 /// <summary>The two outcomes <see cref="EntityInterpBuffer.Resolve"/> can produce.</summary>

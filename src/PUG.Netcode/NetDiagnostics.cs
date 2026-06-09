@@ -36,6 +36,7 @@ public sealed class NetDiagnostics
     private readonly List<(string Label, ChannelMux Mux)> _muxes = new();
     private readonly List<(string Label, TimeSync Sync)> _timeSyncs = new();
     private readonly List<(string Label, NetworkReplicator Replicator)> _replicators = new();
+    private readonly List<(string Label, INetStatSource Source)> _sources = new();
     private Action<NetLogLevel, string> _logSink = NoSink;
 
     /// <summary>
@@ -118,6 +119,24 @@ public sealed class NetDiagnostics
     }
 
     /// <summary>
+    /// Register a generic out-of-assembly stat source so its named counters appear in
+    /// <see cref="Snapshot"/> and <see cref="Describe"/> under <paramref name="label"/>.
+    /// This is the seam an extension package (e.g. <c>PUG.Netcode.Prediction</c>) uses to
+    /// contribute diagnostics the core knows nothing about — pull-model, exactly like the
+    /// typed built-in registrations, but with no compile-time coupling to the stat shape.
+    /// See <see cref="INetStatSource"/>.
+    /// </summary>
+    public void RegisterSource(string label, INetStatSource source)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(label);
+        ArgumentNullException.ThrowIfNull(source);
+        lock (_gate)
+        {
+            _sources.Add((label, source));
+        }
+    }
+
+    /// <summary>
     /// Pull a fresh snapshot of every registered source's counters. Cheap enough
     /// to call each frame.
     /// </summary>
@@ -143,7 +162,13 @@ public sealed class NetDiagnostics
                 replicators[i] = new ReplicatorDiagnostics(_replicators[i].Label, _replicators[i].Replicator.Stats);
             }
 
-            return new NetDiagnosticsSnapshot(muxes, syncs, replicators);
+            var sources = new NamedStatGroup[_sources.Count];
+            for (var i = 0; i < _sources.Count; i++)
+            {
+                sources[i] = new NamedStatGroup(_sources[i].Label, _sources[i].Source.SampleStats());
+            }
+
+            return new NetDiagnosticsSnapshot(muxes, syncs, replicators, sources);
         }
     }
 
@@ -210,6 +235,23 @@ public sealed class NetDiagnostics
             sb.AppendLine();
         }
 
+        foreach (var group in snapshot.Sources)
+        {
+            sb.Append("  source \"").Append(group.Label).Append("\":");
+            if (group.Stats.Count == 0)
+            {
+                sb.Append(" (no stats)");
+            }
+
+            foreach (var stat in group.Stats)
+            {
+                sb.Append(' ').Append(stat.Name).Append('=')
+                    .Append(stat.Value.ToString("0.###", CultureInfo.InvariantCulture));
+            }
+
+            sb.AppendLine();
+        }
+
         return sb.ToString();
     }
 }
@@ -239,14 +281,27 @@ public readonly record struct TimeSyncDiagnostics(string Label, TimeSyncStats St
 public readonly record struct ReplicatorDiagnostics(string Label, ReplicatorStats Stats);
 
 /// <summary>
-/// A point-in-time aggregate of everything <see cref="NetDiagnostics"/> can see.
-/// Grows a field per tier as they land (Tier C prediction error next); today it
-/// carries the channel muxes, time-syncs, and entity replicators.
+/// One registered <see cref="INetStatSource"/>'s named stats within a
+/// <see cref="NetDiagnosticsSnapshot"/>. Unlike the typed diagnostics records above,
+/// the core does not know what these numbers mean — they come from an extension package
+/// via <see cref="NetDiagnostics.RegisterSource"/>.
+/// </summary>
+/// <param name="Label">The label the source was registered under.</param>
+/// <param name="Stats">Its named stats at poll time.</param>
+public readonly record struct NamedStatGroup(string Label, IReadOnlyList<NetStat> Stats);
+
+/// <summary>
+/// A point-in-time aggregate of everything <see cref="NetDiagnostics"/> can see. The
+/// typed lists are the built-in tiers (channel muxes, time-syncs, entity replicators);
+/// <see cref="Sources"/> carries generic stats contributed from outside the core assembly
+/// (Tier C interpolation / prediction / reconciliation) via <see cref="INetStatSource"/>.
 /// </summary>
 /// <param name="Muxes">Per-mux counters, in registration order.</param>
 /// <param name="TimeSyncs">Per-time-sync estimates, in registration order.</param>
 /// <param name="Replicators">Per-replicator counters, in registration order.</param>
+/// <param name="Sources">Per-source named stats from extension packages, in registration order.</param>
 public readonly record struct NetDiagnosticsSnapshot(
     IReadOnlyList<MuxDiagnostics> Muxes,
     IReadOnlyList<TimeSyncDiagnostics> TimeSyncs,
-    IReadOnlyList<ReplicatorDiagnostics> Replicators);
+    IReadOnlyList<ReplicatorDiagnostics> Replicators,
+    IReadOnlyList<NamedStatGroup> Sources);

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
+    <RootNamespace>PUG.Netcode.Prediction</RootNamespace>
+    <AssemblyName>PUG.Netcode.Prediction</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PUG.Netcode\PUG.Netcode.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="PUG.Netcode.Prediction.Tests" />
+  </ItemGroup>
+
+</Project>

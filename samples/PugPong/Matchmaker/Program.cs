@@ -22,6 +22,14 @@ var options = new MatchmakerOptions<PongPayload>(
     MaxPayloadBytes: 4096,
     RateLimitPerMinute: 60,
     RateLimitBurst: 10,
+    // The introduced-peer authorization must outlast the WHOLE match, not just
+    // the dial. Over Tor the player-service onion descriptors take ~30-60s to
+    // publish before the peers can connect at all, so the SDK's 30s default
+    // expires the introduction before the P2P link forms — the host then
+    // rejects the guest's input channel as "non-introduced" and the guest goes
+    // inert. 1h comfortably covers Tor setup + a full match; the per-match
+    // player service is torn down at match end anyway, so this is the real bound.
+    IntroductionExpiry: TimeSpan.FromHours(1),
     SerializePayload: p => p.ToByteArray(),
     DeserializePayload: PongPayload.Parser.ParseFrom);
 

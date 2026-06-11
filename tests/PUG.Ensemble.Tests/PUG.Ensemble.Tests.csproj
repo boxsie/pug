@@ -28,7 +28,7 @@
     <!-- The daemon test harness (Ensemble.Client.Testing.EnsembleDaemonHarness)
          ships inside Ensemble.Client. PUG.Ensemble pins the library version;
          the test project must match it so the harness API stays in sync. -->
-    <PackageReference Include="Ensemble.Client" Version="2.0.0" />
+    <PackageReference Include="Ensemble.Client" Version="2.0.1" />
   </ItemGroup>
 
 </Project>

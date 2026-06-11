@@ -27,6 +27,11 @@
 #   TOR_PATH                 tor binary for the daemons (default: /usr/bin/tor)
 #   PUGPONG_MATCHMAKER_ADDR  matchmaker E-address to dial
 #                            (default: the deployed ensemble-eu matchmaker)
+#   SEED_NODES               comma-separated v3 onion bootstrap seed(s) for DHT
+#                            discovery (default: the ensemble-eu node onion). The
+#                            binary ships NO default seeds, so without this a Tor
+#                            daemon has an empty routing table and can't find the
+#                            matchmaker.
 #   DAEMON_A_PORT            client A daemon gRPC port (default 9091)
 #   DAEMON_B_PORT            client B daemon gRPC port (default 9092)
 
@@ -49,6 +54,13 @@ DAEMON_B_PORT="${DAEMON_B_PORT:-9092}"
 # across restarts (persisted daemon identity + fixed service name). Override
 # PUGPONG_MATCHMAKER_ADDR to point at a different matchmaker.
 MATCHMAKER_ADDR="${PUGPONG_MATCHMAKER_ADDR:-E_REDACTED_MATCHMAKER_ADDR}"
+
+# DHT bootstrap seed(s) — the ensemble-eu node onion (the node that hosts the
+# matchmaker). The binary has no built-in default seeds, so each client daemon
+# must be handed one or its routing table stays empty and the matchmaker lookup
+# fails (dht: lookup failed, queried=0). Stable across deploys (persisted node
+# identity on the data disk). Override SEED_NODES for a different seed set.
+SEED_NODES="${SEED_NODES:-redacted-seed.onion}"
 
 # --- Prep ---------------------------------------------------------------
 mkdir -p "$OUTPUT_DIR/daemon-A" "$OUTPUT_DIR/daemon-B"
@@ -101,6 +113,7 @@ echo "→ daemon A (client A, port $DAEMON_A_PORT, data $OUTPUT_DIR/daemon-A)…
 "$ENSEMBLE_BIN" --headless \
     --signaling=tor \
     --tor-path "$TOR_PATH" \
+    --seed-nodes "$SEED_NODES" \
     --api-addr "127.0.0.1:$DAEMON_A_PORT" \
     --data-dir "$OUTPUT_DIR/daemon-A" \
     >"$OUTPUT_DIR/daemon-A.log" 2>&1 &
@@ -110,6 +123,7 @@ echo "→ daemon B (client B, port $DAEMON_B_PORT, data $OUTPUT_DIR/daemon-B)…
 "$ENSEMBLE_BIN" --headless \
     --signaling=tor \
     --tor-path "$TOR_PATH" \
+    --seed-nodes "$SEED_NODES" \
     --api-addr "127.0.0.1:$DAEMON_B_PORT" \
     --data-dir "$OUTPUT_DIR/daemon-B" \
     >"$OUTPUT_DIR/daemon-B.log" 2>&1 &

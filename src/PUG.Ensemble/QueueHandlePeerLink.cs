@@ -95,10 +95,15 @@ public sealed class QueueHandlePeerLink : IPeerLink
     {
         // The channel carries traffic from any peer (and the matchmaker is
         // already excluded upstream); keep only our matched peer's bytes, the
-        // same filter MatchSession.ReadLoopAsync applies.
+        // same filter MatchSession.ReadLoopAsync applies. Readiness-barrier
+        // frames (PeerReadiness) share this channel pre-game; a straggler
+        // resend arriving after the barrier completed must not reach the
+        // channel mux, so they are filtered here too.
         await foreach (var msg in _channel.PeerMessages(ct).ConfigureAwait(false))
         {
             if (msg.FromAddr != _peerAddr)
+                continue;
+            if (PeerReadiness.IsReadinessFrame(msg.Bytes.Span))
                 continue;
             yield return msg.Bytes;
         }

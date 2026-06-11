@@ -13,6 +13,11 @@ public partial class Lobby : Control
     private Label _status = null!;
     private Button _cancelButton = null!;
 
+    // How long to wait for the post-introduction peer link before giving up.
+    // Tor hidden-service dials normally land in 10–20s; 2 minutes is generous
+    // headroom for a slow circuit before bailing back to the splash screen.
+    private static readonly TimeSpan ConnectBarrierTimeout = TimeSpan.FromMinutes(2);
+
     private QueueHandle<PongPayload>? _handle;
     private CancellationTokenSource? _cts;
 
@@ -54,6 +59,28 @@ public partial class Lobby : Control
 
             SetStatus("queued — waiting for opponent");
             var match = await _handle!.WaitForMatchAsync(_cts.Token).ConfigureAwait(false);
+
+            // Don't enter the match scene on the introduction alone — over Tor
+            // the actual peer link takes ~10–20s to land, and starting early
+            // plays the host against a frozen guest. Hold here until the
+            // readiness barrier proves the link both ways; it completes on
+            // both sides within one round-trip, so it doubles as the
+            // synchronized game-start signal.
+            SetTitle("Opponent found");
+            SetStatus("connecting to opponent…");
+            using var readyCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+            readyCts.CancelAfter(ConnectBarrierTimeout);
+            try
+            {
+                await PeerReadiness.WaitForPeerReadyAsync(
+                    _handle, match.Peers[0].EnsembleAddr, ct: readyCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!_cts.IsCancellationRequested)
+            {
+                throw new TimeoutException(
+                    $"opponent found but no connection after {ConnectBarrierTimeout.TotalSeconds:0}s");
+            }
+
             SceneRouting.Handle = _handle;
             SceneRouting.Match = match;
             CallDeferred(MethodName.GoToMatch);
@@ -63,6 +90,10 @@ public partial class Lobby : Control
         {
             GD.PrintErr($"[Lobby] queue error: {ex}");
             SceneRouting.LastError = ex.Message;
+            // The handle never made it to the Match scene — tear it down here
+            // so the per-queue player service deregisters (otherwise it leaks
+            // until process exit and the matchmaker keeps a dead session).
+            _ = DisposeHandleAsync();
             CallDeferred(MethodName.GoToSplash);
         }
     }

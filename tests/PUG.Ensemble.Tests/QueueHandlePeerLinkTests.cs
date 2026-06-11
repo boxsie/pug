@@ -88,6 +88,30 @@ public class QueueHandlePeerLinkTests
     }
 
     [Fact]
+    public async Task ReceiveAsync_FiltersReadinessBarrierFrames()
+    {
+        var channel = new FakePeerChannel();
+        var link = new QueueHandlePeerLink(channel, PeerAddr);
+
+        var ready = new byte[PeerReadiness.Magic.Length + 1];
+        PeerReadiness.Magic.CopyTo(ready, 0);
+        var ack = (byte[])ready.Clone();
+        ack[^1] = 1;
+
+        channel.Inject(PeerAddr, ready);          // straggler READY — dropped
+        channel.Inject(PeerAddr, new byte[] { 5 });
+        channel.Inject(PeerAddr, ack);            // straggler ACK — dropped
+        channel.Inject(PeerAddr, new byte[] { 6 });
+        channel.Complete();
+
+        var got = new List<byte>();
+        await foreach (var msg in link.ReceiveAsync())
+            got.Add(msg.Span[0]);
+
+        Assert.Equal(new byte[] { 5, 6 }, got);
+    }
+
+    [Fact]
     public void Constructor_RejectsBlankPeerAddr()
     {
         Assert.Throws<ArgumentException>(() => new QueueHandlePeerLink(new FakePeerChannel(), "  "));

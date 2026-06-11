@@ -129,58 +129,35 @@ public sealed class QueueHandle<TPayload> : IAsyncDisposable, IPeerChannel
                     case MatchSignal.Introduction intro
                         when IsValidIntroduction(intro.Event):
                     {
-                        // Single-dialer rule: only the lexicographically-lower
-                        // service address dials; the higher one does NOT dial and
-                        // instead accepts the peer's inbound dial (via its
-                        // admission ruleset) and replies over the remembered
-                        // inbound connection (rpc resolveSendPeer's inbound path).
-                        // Both peers compute the same split from the same two
-                        // addresses, so exactly one dial happens.
-                        //
-                        // PUG previously relied on a SYMMETRIC mutual dial,
-                        // trusting the daemon to tolerate two services dialing
-                        // each other at once (ensemble 4b77b7ba). That holds over
-                        // loopback but NOT over Tor: the mutual dial never
-                        // converges to one stable control channel — it storms
-                        // (hundreds of churned Tor control channels), so
-                        // rpc.Service.Send never finds a live reusable route and
-                        // every send re-dials, leaving the higher-addr peer
-                        // unable to reach the lower one (guest input never lands).
-                        // The single-dialer rule sidesteps that collision
-                        // deterministically; the underlying daemon bug is tracked
-                        // separately. Fire-and-forget — failures surface on onError.
+                        // Symmetric mutual dial: each peer dials the other as
+                        // its own player service (ADR df82c69a pillar 1, so the
+                        // peer's gate sees our service address) AND accepts the
+                        // inbound dial via its admission ruleset. The daemon
+                        // tolerates the simultaneous mutual dial since ensemble
+                        // 0be7faa (ticket 4b77b7ba) offloaded connect_peer off
+                        // the bidi-stream action loop; before that fix, mutual
+                        // dialing deadlocked and we ran a single-dialer rule
+                        // here instead. Fire-and-forget — the daemon runs the
+                        // handshake; failures surface asynchronously on onError.
                         var peerAddr = intro.Event.PeerAddr;
-                        bool weDial = string.CompareOrdinal(_service.ServiceAddress, peerAddr) < 0;
                         bool dialRequested = false;
-                        if (weDial)
+                        try
                         {
-                            try
-                            {
-                                await _service.ConnectPeerAsync(peerAddr, linked.Token).ConfigureAwait(false);
-                                dialRequested = true;
-                            }
-                            catch (OperationCanceledException)
-                            {
-                                throw;
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogWarning(ex,
-                                    "Service-identity dial to introduced peer {Peer} failed to enqueue", peerAddr);
-                            }
-                            _logger.LogDebug(
-                                "Dialing introduced peer {Peer} as service {Service} (single-dialer: we are lower)",
-                                peerAddr, _service.ServiceAddress);
+                            await _service.ConnectPeerAsync(peerAddr, linked.Token).ConfigureAwait(false);
+                            dialRequested = true;
                         }
-                        else
+                        catch (OperationCanceledException)
                         {
-                            _logger.LogDebug(
-                                "Not dialing introduced peer {Peer} as service {Service} (single-dialer: peer is lower; accepting inbound)",
-                                peerAddr, _service.ServiceAddress);
+                            throw;
                         }
-                        // Connected reflects whether OUR dial was enqueued; when
-                        // we're the acceptor it's false and the link comes up via
-                        // the peer's inbound dial + our admission accept.
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex,
+                                "Service-identity dial to introduced peer {Peer} failed to enqueue", peerAddr);
+                        }
+                        _logger.LogDebug("Dialing introduced peer {Peer} as service {Service}", peerAddr, _service.ServiceAddress);
+                        // Connected reflects whether our dial was enqueued; the
+                        // peer's reciprocal dial is gated by our admission rules.
                         var endpoint = new PeerEndpoint(peerAddr, dialRequested);
                         var roleHint = string.IsNullOrEmpty(intro.Event.RoleHint)
                             ? null

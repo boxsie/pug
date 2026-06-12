@@ -357,6 +357,19 @@ public sealed class MatchmakerServiceHostTests : IClassFixture<MatchmakerService
         Assert.Equal(1024L, manifest.MaxPayloadBytes);
         Assert.Equal(120, manifest.RateLimitRequestsPerMinute);
         Assert.Equal(30, manifest.RateLimitBurst);
+
+        // Metrics declared per ensemble ADR-0005: the dashboard renders these
+        // generically from kind+unit; the daemon stamps the service label.
+        var metrics = manifest.Metrics.ToDictionary(m => m.Name);
+        Assert.Equal(4, metrics.Count);
+        Assert.Equal("gauge", metrics[MatchmakerServiceHost<byte[]>.MetricQueueDepth].Kind);
+        Assert.Equal("gauge", metrics[MatchmakerServiceHost<byte[]>.MetricActiveLobbies].Kind);
+        Assert.Equal("counter", metrics[MatchmakerServiceHost<byte[]>.MetricMatchesFormed].Kind);
+        var hist = metrics[MatchmakerServiceHost<byte[]>.MetricTimeToMatch];
+        Assert.Equal("histogram", hist.Kind);
+        Assert.Equal("seconds", hist.Unit);
+        Assert.NotNull(hist.Buckets);
+        Assert.True(hist.Buckets!.Count > 0);
     }
 
     /// <summary>

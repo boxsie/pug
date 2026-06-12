@@ -189,13 +189,52 @@ public sealed class MatchmakerServiceHost<TPayload> : IAsyncDisposable
     /// internally for unit-test inspection so tests can verify ACL / transport /
     /// rate-limit / payload-cap shape without paying for a real daemon round-trip.
     /// </summary>
+    // Metric names declared in the manifest and pushed from the match loop
+    // (ensemble ADR-0005). The daemon stamps the `service` label; the
+    // dashboard renders these generically from kind+unit — no ensemble-side
+    // code names them. Inert unless the daemon runs with --metrics.
+    internal const string MetricQueueDepth = "queue_depth";
+    internal const string MetricActiveLobbies = "active_lobbies";
+    internal const string MetricMatchesFormed = "matches_formed_total";
+    internal const string MetricTimeToMatch = "time_to_match_seconds";
+
     internal ServiceManifest BuildManifest() =>
         ServiceManifest.NewBuilder(_options.ServiceName)
             .Acl(ServiceAcl.Public)
             .Transport(ServiceTransport.Rpc)
             .MaxPayloadBytes(_options.MaxPayloadBytes)
             .RateLimit(_options.RateLimitPerMinute, _options.RateLimitBurst)
+            .Metrics(
+                new MetricSpec(MetricQueueDepth, "gauge", Unit: "count",
+                    Help: "Players currently queued for a match"),
+                new MetricSpec(MetricActiveLobbies, "gauge", Unit: "count",
+                    Help: "Private-match codes outstanding"),
+                new MetricSpec(MetricMatchesFormed, "counter", Unit: "count",
+                    Help: "Matches formed since the host started"),
+                new MetricSpec(MetricTimeToMatch, "histogram", Unit: "seconds",
+                    Help: "Queue-join to match-formed wait per player",
+                    Buckets: new[] { 1.0, 5, 15, 30, 60, 120, 300 }))
             .Build();
+
+    /// <summary>
+    /// Fire-and-forget metric push. Failures are logged at debug and never
+    /// disturb the match loop — telemetry must not be able to break
+    /// matchmaking, and a daemon without <c>--metrics</c> just drops samples.
+    /// </summary>
+    private async Task PushMetricSafeAsync(
+        string name, double value, CancellationToken ct)
+    {
+        var svc = _service;
+        if (svc is null) return;
+        try
+        {
+            await svc.PushMetricAsync(name, value, ct: ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "metric push failed for {Metric}", name);
+        }
+    }
 
     private async ValueTask OnEventAsync(ServiceEvent ev)
     {
@@ -628,6 +667,12 @@ public sealed class MatchmakerServiceHost<TPayload> : IAsyncDisposable
         //    options to opt out (lobby-side TTL, e.g. Redis EXPIRE).
         await PruneExpiredPrivateCodesAsync(ct).ConfigureAwait(false);
 
+        // Tick-cadence gauges (~1s): waiting players + outstanding private
+        // codes. Pushed before the match attempt so a queue that drains this
+        // tick still shows its pre-match depth once.
+        await PushMetricSafeAsync(MetricQueueDepth, _sessions.Count, ct).ConfigureAwait(false);
+        await PushMetricSafeAsync(MetricActiveLobbies, _codeCreatedAt.Count, ct).ConfigureAwait(false);
+
         var result = await _matcher.TryMatchAsync(ct).ConfigureAwait(false);
         if (result is null || result.Teams.Count == 0)
             return;
@@ -683,6 +728,19 @@ public sealed class MatchmakerServiceHost<TPayload> : IAsyncDisposable
                     matched[i].QueuedSessionId, expiresAtMs, ct).ConfigureAwait(false);
                 await EmitIntroductionAsync(svc, matched[j].PeerAddr, matched[i].PeerAddr,
                     matched[j].QueuedSessionId, expiresAtMs, ct).ConfigureAwait(false);
+            }
+        }
+
+        // One formed match per successful TryMatch result; per-player wait
+        // observed from the ticket's own enqueue stamp.
+        if (matched.Count > 0)
+        {
+            await PushMetricSafeAsync(MetricMatchesFormed, 1, ct).ConfigureAwait(false);
+            var now = DateTime.UtcNow;
+            foreach (var (ticket, _, _, _) in matched)
+            {
+                var wait = (now - ticket.EnqueuedAt).TotalSeconds;
+                await PushMetricSafeAsync(MetricTimeToMatch, wait < 0 ? 0 : wait, ct).ConfigureAwait(false);
             }
         }
 

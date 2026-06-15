@@ -1,5 +1,10 @@
 # PUG
 
+> ⚠️ **Hobby project — don't take it seriously.** This is just someone having fun
+> building things in their spare time. It is **not secure**, **not complete**, and
+> **not production-ready**. There are no guarantees, no support, and no warranty —
+> don't trust it with anything that matters. Use at your own risk.
+
 **PUG (Pick-Up Group)** is a .NET matchmaking library: queues, matchers,
 private lobbies, and session handoff for multiplayer games and services. The
 core is dependency-free and generic over your own ticket/payload types; concrete

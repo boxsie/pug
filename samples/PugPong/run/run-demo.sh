@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Brings up the PugPong demo against the DEPLOYED matchmaker:
+# Brings up the PugPong demo against a REMOTE matchmaker:
 #   2 ensembled daemons (one per Godot client) + 2 Godot clients.
-# The matchmaker is no longer run locally — it lives on the eu GCP node
-# (ensemble-eu) and is reached over Tor via its E-address
-# (PUGPONG_MATCHMAKER_ADDR below). All runtime artefacts (daemon data dirs,
-# logs, a pids file for stop.sh) live under ./output/ which is gitignored.
+# The matchmaker runs on some remote peer (you host it yourself) and is reached
+# over Tor via its E-address (PUGPONG_MATCHMAKER_ADDR below). All runtime
+# artefacts (daemon data dirs, logs, a pids file for stop.sh) live under
+# ./output/ which is gitignored.
 #
 # Topology: each Godot client gets its own daemon (A, B), both on Tor signaling
 # so they can reach the matchmaker's onion service and discover each other for
@@ -25,13 +25,12 @@
 #                            default: ../../../../ensemble/bin/ensemble
 #   GODOT_BIN                godot binary (default: 'godot' on PATH)
 #   TOR_PATH                 tor binary for the daemons (default: /usr/bin/tor)
-#   PUGPONG_MATCHMAKER_ADDR  matchmaker E-address to dial
-#                            (default: the deployed ensemble-eu matchmaker)
+#   PUGPONG_MATCHMAKER_ADDR  matchmaker E-address to dial (REQUIRED — you host
+#                            the matchmaker; there is no default)
 #   SEED_NODES               comma-separated v3 onion bootstrap seed(s) for DHT
-#                            discovery (default: the ensemble-eu node onion). The
-#                            binary ships NO default seeds, so without this a Tor
-#                            daemon has an empty routing table and can't find the
-#                            matchmaker.
+#                            discovery (REQUIRED). The binary ships NO default
+#                            seeds, so without this a Tor daemon has an empty
+#                            routing table and can't find the matchmaker.
 #   DAEMON_A_PORT            client A daemon gRPC port (default 9091)
 #   DAEMON_B_PORT            client B daemon gRPC port (default 9092)
 
@@ -50,17 +49,29 @@ TOR_PATH="${TOR_PATH:-/usr/bin/tor}"
 DAEMON_A_PORT="${DAEMON_A_PORT:-9091}"
 DAEMON_B_PORT="${DAEMON_B_PORT:-9092}"
 
-# The deployed PugPong matchmaker on the eu GCP node (ensemble-eu). Stable
-# across restarts (persisted daemon identity + fixed service name). Override
-# PUGPONG_MATCHMAKER_ADDR to point at a different matchmaker.
-MATCHMAKER_ADDR="${PUGPONG_MATCHMAKER_ADDR:-E_REDACTED_MATCHMAKER_ADDR}"
+# The matchmaker E-address to dial. You host the matchmaker yourself (e.g. an
+# ensembled daemon running the PugPong matchmaker service); set this to its
+# E-address. No default — the demo can't guess where your matchmaker lives.
+MATCHMAKER_ADDR="${PUGPONG_MATCHMAKER_ADDR:-}"
 
-# DHT bootstrap seed(s) — the ensemble-eu node onion (the node that hosts the
-# matchmaker). The binary has no built-in default seeds, so each client daemon
-# must be handed one or its routing table stays empty and the matchmaker lookup
-# fails (dht: lookup failed, queried=0). Stable across deploys (persisted node
-# identity on the data disk). Override SEED_NODES for a different seed set.
-SEED_NODES="${SEED_NODES:-redacted-seed.onion}"
+# DHT bootstrap seed(s) — a v3 onion of a reachable ensemble node (typically the
+# node that hosts your matchmaker). The binary has no built-in default seeds, so
+# each client daemon must be handed one or its routing table stays empty and the
+# matchmaker lookup fails (dht: lookup failed, queried=0). Set SEED_NODES to
+# your own seed(s).
+SEED_NODES="${SEED_NODES:-}"
+
+# Both are required — bail early with a clear message rather than dialing nothing.
+if [ -z "$MATCHMAKER_ADDR" ]; then
+    echo "PUGPONG_MATCHMAKER_ADDR is required (the E-address of your matchmaker)." >&2
+    echo "  e.g. PUGPONG_MATCHMAKER_ADDR=E... SEED_NODES=<onion> ./run-demo.sh" >&2
+    exit 1
+fi
+if [ -z "$SEED_NODES" ]; then
+    echo "SEED_NODES is required (a v3 onion bootstrap seed for DHT discovery)." >&2
+    echo "  e.g. PUGPONG_MATCHMAKER_ADDR=E... SEED_NODES=<onion> ./run-demo.sh" >&2
+    exit 1
+fi
 
 # --- Prep ---------------------------------------------------------------
 mkdir -p "$OUTPUT_DIR/daemon-A" "$OUTPUT_DIR/daemon-B"

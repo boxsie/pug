@@ -1,0 +1,30 @@
+# pug-pong-matchmaker — Ensemble service package manifest (ADR-0009 / ADR-0007).
+#
+# The release bundle ships this at the bundle ROOT next to the self-contained
+# binary — the daemon's installer reads ensemble-service.yaml at the archive
+# root, then the supervisor spawns `entrypoint.command` with a per-spawn token.
+#
+# A FIFO 1v1 matchmaker: it registers ONE public rpc service, runs a queue, and
+# at match time introduces the two players over a direct Ensemble P2P link
+# (PeerIntroduction) — then steps out; the rally flows peer-to-peer. It mints no
+# sub-identities (the per-match player services live on the CLIENTS' own
+# daemons), so the ceiling is exactly a single public rpc service.
+
+name: pug-pong-matchmaker
+version: 0.1.0
+description: >-
+  PugPong matchmaker: a FIFO 1v1 queue that pairs two players and introduces
+  them over a direct Ensemble P2P link, then steps out of the rally.
+
+entrypoint:
+  command: ["PugPong.Matchmaker"]
+
+# Self-contained .NET publish — the runtime is bundled, so the hosting node needs
+# nothing installed (not even dotnet). The process connects via
+# EnsembleClient.FromEnv() using the daemon's spawn token (ADR-0009 §5).
+
+capabilities:
+  transport: rpc
+  acl: public
+  max_payload_bytes: 4096
+  frontend: none

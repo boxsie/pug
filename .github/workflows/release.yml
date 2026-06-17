@@ -1,13 +1,15 @@
 name: release
 
-# Public package build on GitHub-hosted runners (no homelab CI involved).
-# PUG is a .NET netcode library set, so the installable artifact is NuGet
-# packages, published to the GitHub Packages NuGet feed using the built-in
-# GITHUB_TOKEN — no external secrets. Consumers add the feed:
-#   dotnet nuget add source https://nuget.pkg.github.com/boxsie/index.json
+# Public build on GitHub-hosted runners (no homelab CI involved). Two outputs:
+#   - pack: PUG netcode libraries → NuGet packages on the GitHub Packages feed
+#     (built-in GITHUB_TOKEN, no secret). Consumers add the feed:
+#       dotnet nuget add source https://nuget.pkg.github.com/boxsie/index.json
+#   - matchmaker-bundle: the PugPong matchmaker as an installable Ensemble
+#     service bundle (ADR-0009) → attached to a GitHub Release, registered in
+#     the ensemble registry as `pug-pong-matchmaker`.
 #
-# Cut a release:  git tag v0.1.0 && git push github v0.1.0
-# (the tag drives the package version).
+# Cut a release:  git tag v0.1.1 && git push github v0.1.1
+# (the tag drives both the package version and the bundle version).
 
 on:
   push:
@@ -51,3 +53,38 @@ jobs:
             --store-password-in-clear-text \
             --name github "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
           dotnet nuget push "nupkgs/*.nupkg" --source github --api-key "${{ github.token }}" --skip-duplicate
+
+  matchmaker-bundle:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # Self-contained linux-x64 publish of the PugPong matchmaker as an
+      # installable Ensemble service bundle: the manifest + self-contained
+      # binary at the archive ROOT (the daemon's installer reads
+      # ensemble-service.yaml at the root — NOT inside a wrapper dir). The
+      # file is named -linux-amd64 to match the registry's platform key.
+      - name: Publish matchmaker bundle
+        run: |
+          VERSION="${TAG#v}"
+          dotnet publish samples/PugPong/Matchmaker/PugPong.Matchmaker.csproj \
+            -c Release -r linux-x64 --self-contained true -o bundle
+          cp samples/PugPong/Matchmaker/ensemble-service.yaml bundle/
+          sed -i "s/^version:.*/version: ${VERSION}/" bundle/ensemble-service.yaml
+          tar -C bundle -czf "pug-pong-matchmaker-${VERSION}-linux-amd64.tar.gz" .
+
+      - name: Attach to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" pug-pong-matchmaker-*-linux-amd64.tar.gz \
+            --title "$TAG" --target "$GITHUB_SHA" --generate-notes \
+          || gh release upload "$TAG" pug-pong-matchmaker-*-linux-amd64.tar.gz --clobber

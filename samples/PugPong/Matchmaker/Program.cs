@@ -6,13 +6,21 @@ using PUG.Ensemble;
 using PugPong.Matchmaker;
 using PugPong.Proto;
 
+// Daemon-supervised when ENSEMBLE_SOCKET is set (ADR-0009 §5): the daemon spawns
+// us and brokers our connection over its socket with a per-spawn token, and tells
+// us the installed service name. Otherwise fall back to a hardcoded gRPC addr —
+// the local Godot demo (run/run-demo.sh) runs us as a plain sidecar process.
+var supervised = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ENSEMBLE_SOCKET"));
 var ensembleAddr = Environment.GetEnvironmentVariable("ENSEMBLE_GRPC_ADDR") ?? "http://localhost:9090";
-var serviceName = Environment.GetEnvironmentVariable("PUGPONG_SERVICE_NAME") ?? "pug-pong-matchmaker";
+var serviceName = Environment.GetEnvironmentVariable("ENSEMBLE_SERVICE_NAME")
+    ?? Environment.GetEnvironmentVariable("PUGPONG_SERVICE_NAME") ?? "pug-pong-matchmaker";
 
 using var loggerFactory = LoggerFactory.Create(b => b.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss "; }));
 var log = loggerFactory.CreateLogger("pugpong");
 
-await using var ensemble = new EnsembleClient(ensembleAddr, loggerFactory.CreateLogger<EnsembleClient>());
+await using var ensemble = supervised
+    ? EnsembleClient.FromEnv(loggerFactory.CreateLogger<EnsembleClient>())
+    : new EnsembleClient(ensembleAddr, loggerFactory.CreateLogger<EnsembleClient>());
 
 var queue = new InMemoryQueue<Ticket<PongPayload>>();
 var matcher = new FifoMatcher<Ticket<PongPayload>>(queue, new[] { 1, 1 });

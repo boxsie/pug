@@ -6,6 +6,11 @@
     <RootNamespace>PugPong.Matchmaker</RootNamespace>
     <AssemblyName>PugPong.Matchmaker</AssemblyName>
     <Nullable>enable</Nullable>
+    <!-- Supervised, the matchmaker runs as a subprocess INSIDE the daemon's
+         debian-slim container, which ships no ICU. It has no culture-sensitive
+         work (logs + protobuf + Base58 addresses), so run with invariant
+         globalization — drops the libicu dependency entirely. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
   <ItemGroup>

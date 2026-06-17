@@ -1,0 +1,53 @@
+name: release
+
+# Public package build on GitHub-hosted runners (no homelab CI involved).
+# PUG is a .NET netcode library set, so the installable artifact is NuGet
+# packages, published to the GitHub Packages NuGet feed using the built-in
+# GITHUB_TOKEN — no external secrets. Consumers add the feed:
+#   dotnet nuget add source https://nuget.pkg.github.com/boxsie/index.json
+#
+# Cut a release:  git tag v0.1.0 && git push github v0.1.0
+# (the tag drives the package version).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Package version tag to publish (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # net8/net9/net10 multi-target — the 10 SDK builds the down-level TFMs.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Pack libraries
+        run: |
+          VERSION="${TAG#v}"
+          for proj in src/PUG.Core src/PUG.Netcode src/PUG.Netcode.Prediction src/PUG.Ensemble src/PUG.Redis; do
+            dotnet pack "$proj" -c Release -p:Version="$VERSION" -o nupkgs
+          done
+
+      - name: Push to GitHub Packages
+        run: |
+          dotnet nuget add source \
+            --username "${{ github.actor }}" --password "${{ github.token }}" \
+            --store-password-in-clear-text \
+            --name github "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
+          dotnet nuget push "nupkgs/*.nupkg" --source github --api-key "${{ github.token }}" --skip-duplicate
